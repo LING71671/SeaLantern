@@ -82,11 +82,7 @@ console.log('[AboutView] 脚本执行完成');
     <!-- Hero Section -->
     <div class="hero-section">
       <div class="hero-logo">
-        <svg width="72" height="72" viewBox="0 0 28 28" fill="none">
-          <rect x="2" y="2" width="24" height="24" rx="6" fill="var(--sl-primary)" opacity="0.15"/>
-          <rect x="6" y="6" width="16" height="16" rx="3" fill="var(--sl-primary)" opacity="0.3"/>
-          <rect x="10" y="10" width="8" height="8" rx="2" fill="var(--sl-primary)"/>
-        </svg>
+        <img src="../assets/logo.svg" alt="Sea Lantern" width="72" height="72" />
       </div>
       <h1 class="hero-title">Sea Lantern</h1>
       <p class="hero-subtitle">Minecraft 服务器管理工具</p>
