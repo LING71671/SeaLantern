@@ -54,7 +54,7 @@ const paddingValue = PADDING_MAP[props.padding as PaddingType]
 .sl-card {
   display: flex;
   flex-direction: column;
-  background: var(--sl-bg-card, #fff);
+  background: var(--sl-surface, #fff);
   border-radius: var(--sl-radius-md, 6px);
   box-shadow: var(--sl-shadow-sm, 0 1px 3px rgba(0,0,0,0.1));
   transition: box-shadow 0.2s ease;

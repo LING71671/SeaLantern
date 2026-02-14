@@ -84,7 +84,7 @@ const handleClick = () => {
   left: var(--thumb-offset);
   width: var(--thumb-size);
   height: var(--thumb-size);
-  background: white;
+  background: var(--sl-surface, white);
   border-radius: 50%;
   box-shadow: var(--sl-shadow-sm, 0 1px 2px 0 rgb(0 0 0 / 0.05));
   transition: transform var(--sl-transition-fast, 150ms) ease;

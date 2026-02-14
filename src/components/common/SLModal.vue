@@ -58,7 +58,7 @@ const handleClose = () => emit("close");
   max-width: 480px;
   border-radius: var(--sl-radius-lg, 8px);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
-  background: var(--sl-bg-primary, #fff);
+  background: var(--sl-surface, #fff);
   animation: modal-slide 0.25s ease;
 }
 

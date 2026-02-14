@@ -166,7 +166,7 @@ const handleClose = (event: MouseEvent) => {
   &--info {
     background-color: rgba(59, 130, 246, 0.1);
     color: rgb(59, 130, 246);
-    border: 1px solid rgb(59, 130, 246 / 0.2);
+    border: 1px solid rgba(59, 130, 246, 0.2);
   }
 
   &__icon {

@@ -257,18 +257,6 @@ onUnmounted(() => {
 .sl-select {
   position: relative;
   width: 100%;
-  --sl-transition-fast: 0.15s;
-  --sl-radius-md: 6px;
-  --sl-space-xs: 4px;
-  --sl-primary: #007AFF;
-  --sl-primary-bg: rgba(0, 122, 255, 0.1);
-  --sl-surface: #FFFFFF;
-  --sl-surface-hover: #F5F5F5;
-  --sl-border: #E0E0E0;
-  --sl-border-hover: #BDBDBD;
-  --sl-text-primary: #212121;
-  --sl-text-secondary: #666666;
-  --sl-text-tertiary: #9E9E9E;
 }
 
 .sl-select-label {
@@ -371,7 +359,7 @@ onUnmounted(() => {
 }
 
 :root[data-theme="light"] .sl-select-dropdown {
-  background: #ffffff;
+  background: var(--sl-surface, #ffffff);
 }
 
 :root[data-acrylic="true"][data-theme="dark"] .sl-select-dropdown {
