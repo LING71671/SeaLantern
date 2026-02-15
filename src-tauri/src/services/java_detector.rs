@@ -173,7 +173,19 @@ fn check_java(path: &str) -> Option<JavaInfo> {
         resolve_path_from_env(path)?
     } else {
         let p = fs::canonicalize(path).ok()?;
-        clean_windows_path(&p)
+        #[cfg(target_os = "windows")]
+        {
+            let path_str = p.to_string_lossy();
+            if let Some(stripped) = path_str.strip_prefix(r"\\?\") {
+                stripped.to_string()
+            } else {
+                path_str.into_owned()
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            p.to_string_lossy().into_owned()
+        }
     };
 
     Some(JavaInfo {
@@ -183,15 +195,6 @@ fn check_java(path: &str) -> Option<JavaInfo> {
         is_64bit,
         major_version,
     })
-}
-
-fn clean_windows_path(path: &Path) -> String {
-    let path_str = path.to_string_lossy();
-    if let Some(stripped) = path_str.strip_prefix(r"\\?\") {
-        stripped.to_string()
-    } else {
-        path_str.into_owned()
-    }
 }
 
 fn parse_major_version(version: &str) -> u32 {
