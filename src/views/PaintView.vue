@@ -372,15 +372,6 @@ const colorSchemes: Record<string, {
   },
 };
 
-const bgColor = computed(() => colorSchemes[editColorPlan.value].bg);
-const bgSecondaryColor = computed(() => colorSchemes[editColorPlan.value].bgSecondary);
-const bgTertiaryColor = computed(() => colorSchemes[editColorPlan.value].bgTertiary);
-const primaryColor = computed(() => colorSchemes[editColorPlan.value].primary);
-const secondaryColor = computed(() => colorSchemes[editColorPlan.value].secondary);
-const textPrimaryColor = computed(() => colorSchemes[editColorPlan.value].textPrimary);
-const textSecondaryColor = computed(() => colorSchemes[editColorPlan.value].textSecondary);
-const borderColor = computed(() => colorSchemes[editColorPlan.value].border);
-
 const themeOptions = [
   { label: i18n.t("settings.theme_options.auto"), value: "auto" },
   { label: i18n.t("settings.theme_options.light"), value: "light" },
@@ -398,7 +389,6 @@ const bgSettingsExpanded = ref(false);
 const bgPreviewLoaded = ref(false);
 const bgPreviewLoading = ref(false);
 const colorSettingsExpanded = ref(false);
-const editColorPlan = ref("light");
 
 const backgroundPreviewUrl = computed(() => {
   if (!settings.value?.background_image) return "";
