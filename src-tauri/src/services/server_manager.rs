@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
@@ -8,9 +8,35 @@ use crate::models::server::*;
 
 const DATA_FILE: &str = "sea_lantern_servers.json";
 
+#[derive(Clone, Copy, Debug)]
+enum ManagedConsoleEncoding {
+    Utf8,
+    #[cfg(target_os = "windows")]
+    Gbk,
+}
+
+impl ManagedConsoleEncoding {
+    fn java_name(self) -> &'static str {
+        match self {
+            ManagedConsoleEncoding::Utf8 => "UTF-8",
+            #[cfg(target_os = "windows")]
+            ManagedConsoleEncoding::Gbk => "GBK",
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn cmd_code_page(self) -> &'static str {
+        match self {
+            ManagedConsoleEncoding::Utf8 => "65001",
+            ManagedConsoleEncoding::Gbk => "936",
+        }
+    }
+}
+
 pub struct ServerManager {
     pub servers: Mutex<Vec<ServerInstance>>,
     pub processes: Mutex<HashMap<String, Child>>,
+    pub stopping_servers: Mutex<HashSet<String>>,
     pub logs: Mutex<HashMap<String, Vec<String>>>,
     pub data_dir: Mutex<String>,
 }
@@ -26,9 +52,47 @@ impl ServerManager {
         ServerManager {
             servers: Mutex::new(servers),
             processes: Mutex::new(HashMap::new()),
+            stopping_servers: Mutex::new(HashSet::new()),
             logs: Mutex::new(logs_map),
             data_dir: Mutex::new(data_dir),
         }
+    }
+
+    fn is_stopping(&self, id: &str) -> bool {
+        self.stopping_servers
+            .lock()
+            .map(|stopping| stopping.contains(id))
+            .unwrap_or(false)
+    }
+
+    fn mark_stopping(&self, id: &str) {
+        if let Ok(mut stopping) = self.stopping_servers.lock() {
+            stopping.insert(id.to_string());
+        }
+    }
+
+    fn clear_stopping(&self, id: &str) {
+        if let Ok(mut stopping) = self.stopping_servers.lock() {
+            stopping.remove(id);
+        }
+    }
+
+    pub fn request_stop_server(&self, id: &str) -> Result<(), String> {
+        if self.is_stopping(id) {
+            return Ok(());
+        }
+
+        self.mark_stopping(id);
+        let sid = id.to_string();
+        std::thread::spawn(move || {
+            let manager = super::global::server_manager();
+            if let Err(err) = manager.stop_server(&sid) {
+                manager.append_log(&sid, &format!("[Sea Lantern] 停止失败: {}", err));
+                manager.clear_stopping(&sid);
+            }
+        });
+
+        Ok(())
     }
 
     fn save(&self) {
@@ -39,6 +103,48 @@ impl ServerManager {
 
     fn get_app_settings(&self) -> crate::models::settings::AppSettings {
         super::global::settings_manager().get()
+    }
+
+    fn build_managed_jvm_args(
+        &self,
+        server: &ServerInstance,
+        settings: &crate::models::settings::AppSettings,
+        console_encoding: ManagedConsoleEncoding,
+    ) -> Vec<String> {
+        let java_encoding = console_encoding.java_name();
+        let mut args = vec![
+            format!("-Xmx{}M", server.max_memory),
+            format!("-Xms{}M", server.min_memory),
+            format!("-Dfile.encoding={}", java_encoding),
+            format!("-Dsun.stdout.encoding={}", java_encoding),
+            format!("-Dsun.stderr.encoding={}", java_encoding),
+        ];
+
+        let jvm = settings.default_jvm_args.trim();
+        if !jvm.is_empty() {
+            args.extend(jvm.split_whitespace().map(|arg| arg.to_string()));
+        }
+
+        args.extend(server.jvm_args.iter().cloned());
+        args
+    }
+
+    fn write_user_jvm_args(
+        &self,
+        server: &ServerInstance,
+        settings: &crate::models::settings::AppSettings,
+        console_encoding: ManagedConsoleEncoding,
+    ) -> Result<(), String> {
+        let args = self.build_managed_jvm_args(server, settings, console_encoding);
+        let user_jvm_args_path = std::path::Path::new(&server.path).join("user_jvm_args.txt");
+        let content = if args.is_empty() {
+            String::new()
+        } else {
+            format!("{}\n", args.join("\n"))
+        };
+
+        std::fs::write(&user_jvm_args_path, content)
+            .map_err(|e| format!("写入 user_jvm_args.txt 失败: {}", e))
     }
 
     pub fn create_server(&self, req: CreateServerRequest) -> Result<ServerInstance, String> {
@@ -61,6 +167,7 @@ impl ServerManager {
             mc_version: req.mc_version,
             path: server_dir,
             jar_path: req.jar_path,
+            startup_mode: normalize_startup_mode(&req.startup_mode).to_string(),
             java_path: req.java_path,
             max_memory: req.max_memory,
             min_memory: req.min_memory,
@@ -68,6 +175,7 @@ impl ServerManager {
             port: req.port,
             created_at: now,
             last_started_at: None,
+            commands: Vec::new(),
         };
         self.servers.lock().unwrap().push(server.clone());
         self.logs.lock().unwrap().insert(id, Vec::new());
@@ -76,9 +184,10 @@ impl ServerManager {
     }
 
     pub fn import_server(&self, req: ImportServerRequest) -> Result<ServerInstance, String> {
-        let source_jar = std::path::Path::new(&req.jar_path);
-        if !source_jar.exists() {
-            return Err(format!("JAR file not found: {}", req.jar_path));
+        let startup_mode = normalize_startup_mode(&req.startup_mode).to_string();
+        let source_startup_file = std::path::Path::new(&req.jar_path);
+        if !source_startup_file.exists() {
+            return Err(format!("启动文件不存在: {}", req.jar_path));
         }
 
         // 在软件目录下创建服务器文件夹
@@ -90,28 +199,49 @@ impl ServerManager {
         // 创建服务器目录
         std::fs::create_dir_all(&server_dir).map_err(|e| format!("无法创建服务器目录: {}", e))?;
 
-        // 复制JAR文件到服务器目录
-        let jar_filename = source_jar
+        let startup_filename = source_startup_file
             .file_name()
-            .ok_or_else(|| "无法获取JAR文件名".to_string())?;
-        let dest_jar = server_dir.join(jar_filename);
+            .ok_or_else(|| "无法获取启动文件名".to_string())?;
 
-        std::fs::copy(source_jar, &dest_jar).map_err(|e| format!("复制JAR文件失败: {}", e))?;
+        let dest_startup = if startup_mode == "jar" {
+            let dest_jar = server_dir.join(startup_filename);
+            std::fs::copy(source_startup_file, &dest_jar)
+                .map_err(|e| format!("复制JAR文件失败: {}", e))?;
+            println!("已复制JAR文件: {} -> {}", req.jar_path, dest_jar.display());
+            dest_jar
+        } else {
+            let source_server_dir = source_startup_file
+                .parent()
+                .ok_or_else(|| "无法获取启动文件所在目录".to_string())?;
 
-        println!("已复制JAR文件: {} -> {}", req.jar_path, dest_jar.display());
+            println!(
+                "脚本模式导入：复制服务端目录 {} -> {}",
+                source_server_dir.display(),
+                server_dir.display()
+            );
+            copy_dir_recursive(source_server_dir, &server_dir)
+                .map_err(|e| format!("复制服务端目录失败: {}", e))?;
+
+            let copied_startup = server_dir.join(startup_filename);
+            if !copied_startup.exists() {
+                return Err(format!("复制后的启动文件不存在: {}", copied_startup.display()));
+            }
+            copied_startup
+        };
 
         let server_properties_path = server_dir.join("server.properties");
-        let server_properties_content = format!(
-            "# Minecraft server properties\n\
-             # Generated by SeaLantern\n\
-             server-port={}\n\
-             online-mode={}\n",
-            req.port, req.online_mode
-        );
-        std::fs::write(&server_properties_path, server_properties_content)
-            .map_err(|e| format!("创建 server.properties 失败: {}", e))?;
-
-        println!("已创建 server.properties: {}", server_properties_path.display());
+        if !server_properties_path.exists() {
+            let server_properties_content = format!(
+                "# Minecraft server properties\n\
+                 # Generated by SeaLantern\n\
+                 server-port={}\n\
+                 online-mode={}\n",
+                req.port, req.online_mode
+            );
+            std::fs::write(&server_properties_path, server_properties_content)
+                .map_err(|e| format!("创建 server.properties 失败: {}", e))?;
+            println!("已创建 server.properties: {}", server_properties_path.display());
+        }
 
         // 创建服务器实例
         let now = SystemTime::now()
@@ -125,7 +255,8 @@ impl ServerManager {
             core_version: String::new(),
             mc_version: "unknown".into(),
             path: server_dir.to_string_lossy().to_string(),
-            jar_path: dest_jar.to_string_lossy().to_string(),
+            jar_path: dest_startup.to_string_lossy().to_string(),
+            startup_mode,
             java_path: req.java_path,
             max_memory: req.max_memory,
             min_memory: req.min_memory,
@@ -133,6 +264,7 @@ impl ServerManager {
             port: req.port,
             created_at: now,
             last_started_at: None,
+            commands: Vec::new(),
         };
 
         self.servers.lock().unwrap().push(server.clone());
@@ -191,6 +323,7 @@ impl ServerManager {
             mc_version: "unknown".into(),
             path: server_dir.to_string_lossy().to_string(),
             jar_path: dest_jar.to_string_lossy().to_string(),
+            startup_mode: "jar".to_string(),
             java_path: req.java_path,
             max_memory: req.max_memory,
             min_memory: req.min_memory,
@@ -198,6 +331,7 @@ impl ServerManager {
             port: req.port,
             created_at: now,
             last_started_at: None,
+            commands: Vec::new(),
         };
 
         println!(
@@ -222,8 +356,8 @@ impl ServerManager {
         };
 
         println!(
-            "准备启动服务器: id={}, name={}, jar_path={}, java_path={}",
-            server.id, server.name, server.jar_path, server.java_path
+            "准备启动服务器: id={}, name={}, startup_mode={}, startup_path={}, java_path={}",
+            server.id, server.name, server.startup_mode, server.jar_path, server.java_path
         );
 
         // Check if already running
@@ -248,121 +382,101 @@ impl ServerManager {
             let _ = std::fs::write(&eula, "# Auto-accepted by Sea Lantern\neula=true\n");
         }
 
-        // 预处理脚本：在服务器启动前执行自定义脚本
-        #[cfg(target_os = "windows")]
-        {
-            let preload_script = std::path::Path::new(&server.path).join("preload.bat");
-            if preload_script.exists() {
-                println!("发现预加载脚本: {:?}", preload_script);
-                self.append_log(id, "[preload] 开始执行预加载脚本...");
+        //预处理脚本
+        match self.load_preload_script(id, &server) {
+            Ok(msg) => {
+                self.append_log(id, &format!("[preload] 预加载脚本执行完毕：{}", msg));
+                println!("预处理脚本执行完毕：{}", msg);
+            }
+            Err(e) => {
+                // 记录错误到日志，继续启动服务器
+                self.append_log(id, &format!("[preload] 预处理脚本执行失败: {}", e));
+                println!("预处理脚本执行失败: {}，但将继续启动服务器", e);
+            }
+        }
 
-                // Windows 下执行 bat 文件，使用 CREATE_NO_WINDOW 避免弹窗
-                let mut cmd = std::process::Command::new("cmd");
-                cmd.args(["/c", preload_script.to_str().unwrap_or("preload.bat")])
-                    .current_dir(&server.path);
+        let startup_mode = normalize_startup_mode(&server.startup_mode);
+        let startup_path_obj = std::path::Path::new(&server.jar_path);
+        let managed_console_encoding =
+            resolve_managed_console_encoding(startup_mode, startup_path_obj);
 
-                // 隐藏命令行窗口
-                use std::os::windows::process::CommandExt;
-                const CREATE_NO_WINDOW: u32 = 0x08000000;
-                cmd.creation_flags(CREATE_NO_WINDOW);
-
-                match cmd.output() {
-                    Ok(result) => {
-                        if result.status.success() {
-                            println!("preload.bat 执行成功");
-                            if !result.stdout.is_empty() {
-                                let output = String::from_utf8_lossy(&result.stdout);
-                                for line in output.lines() {
-                                    self.append_log(id, &format!("[preload] {}", line));
-                                }
-                            }
-                            self.append_log(id, "[preload] 预加载脚本执行成功");
-                        } else {
-                            let error = String::from_utf8_lossy(&result.stderr);
-                            println!("preload.bat 执行失败: {}", error);
-                            self.append_log(id, &format!("[preload] 执行失败: {}", error));
-                        }
-                    }
-                    Err(e) => {
-                        let error_msg = format!("执行 preload.bat 失败: {}", e);
-                        println!("{}", error_msg);
-                        self.append_log(id, &format!("[preload] {}", error_msg));
-                    }
+        if startup_mode != "jar" {
+            if let Some(major_version) = detect_java_major_version(&server.java_path) {
+                if major_version < 9 {
+                    return Err(format!(
+                        "当前 Java 版本 {} 不支持 @user_jvm_args.txt 参数文件语法，请改用 Java 9+（NeoForge 建议 Java 21）",
+                        major_version
+                    ));
                 }
             }
         }
 
-        // 非 Windows 系统：检查服务器目录下是否有 preload.sh 文件
-        #[cfg(not(target_os = "windows"))]
-        {
-            let preload_script = std::path::Path::new(&server.path).join("preload.sh");
-            if preload_script.exists() {
-                println!("发现预加载脚本: {:?}", preload_script);
-                self.append_log(id, "[preload] 开始执行预加载脚本...");
-
-                // 非 Windows 系统下，作为 shell 脚本执行
-                match std::process::Command::new("sh")
-                    .arg(&preload_script)
-                    .current_dir(&server.path)
-                    .output()
-                {
-                    Ok(result) => {
-                        if result.status.success() {
-                            println!("preload.sh 执行成功");
-                            if !result.stdout.is_empty() {
-                                let output = String::from_utf8_lossy(&result.stdout);
-                                for line in output.lines() {
-                                    self.append_log(id, &format!("[preload] {}", line));
-                                }
-                            }
-                            self.append_log(id, "[preload] 预加载脚本执行成功");
-                        } else {
-                            let error = String::from_utf8_lossy(&result.stderr);
-                            println!("preload.sh 执行失败: {}", error);
-                            self.append_log(id, &format!("[preload] 执行失败: {}", error));
-                        }
-                    }
-                    Err(e) => {
-                        let error_msg = format!("执行 preload.sh 失败: {}", e);
-                        println!("{}", error_msg);
-                        self.append_log(id, &format!("[preload] {}", error_msg));
-                    }
-                }
-            }
-        }
-
-        // 使用最简单的方式直接启动Java
-        let mut cmd = Command::new(&server.java_path);
-        cmd.arg(format!("-Xmx{}M", server.max_memory));
-        cmd.arg(format!("-Xms{}M", server.min_memory));
-
-        // 强制使用UTF-8编码，避免Windows上的中文乱码问题
-        cmd.arg("-Dfile.encoding=UTF-8");
-        cmd.arg("-Dsun.stdout.encoding=UTF-8");
-        cmd.arg("-Dsun.stderr.encoding=UTF-8");
-
-        let jvm = settings.default_jvm_args.trim();
-        if !jvm.is_empty() {
-            for arg in jvm.split_whitespace() {
-                cmd.arg(arg);
-            }
-        }
-
-        for arg in &server.jvm_args {
-            cmd.arg(arg);
-        }
-
-        cmd.arg("-jar");
-
-        // 由于JAR文件现在都在服务器目录下，直接使用文件名
-        let jar_path_obj = std::path::Path::new(&server.jar_path);
-        let jar_filename = jar_path_obj
+        let java_path_obj = std::path::Path::new(&server.java_path);
+        let java_bin_dir = java_path_obj
+            .parent()
+            .ok_or_else(|| format!("Java 路径无效，缺少 bin 目录: {}", server.java_path))?;
+        let java_home_dir = java_bin_dir.parent().unwrap_or(java_bin_dir);
+        let java_bin_dir_str = java_bin_dir.to_string_lossy().to_string();
+        let java_home_dir_str = java_home_dir.to_string_lossy().to_string();
+        let startup_filename = startup_path_obj
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| server.jar_path.clone());
 
-        cmd.arg(&jar_filename);
-        cmd.arg("nogui");
+        let mut cmd = match startup_mode {
+            "bat" => {
+                self.write_user_jvm_args(&server, &settings, managed_console_encoding)?;
+
+                #[cfg(target_os = "windows")]
+                {
+                    use std::os::windows::process::CommandExt;
+
+                    let mut bat_cmd = Command::new("cmd");
+                    let code_page = managed_console_encoding.cmd_code_page();
+                    let launch_command = format!(
+                        "chcp {}>nul & set \"JAVA_HOME={}\" & set \"PATH={};%PATH%\" & call \"{}\" nogui",
+                        code_page,
+                        java_home_dir_str.replace('"', "\"\""),
+                        java_bin_dir_str.replace('"', "\"\""),
+                        startup_filename.replace('"', "\"\"")
+                    );
+                    bat_cmd.arg("/d");
+                    bat_cmd.arg("/c");
+                    bat_cmd.raw_arg(&launch_command);
+                    bat_cmd
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    return Err("BAT 启动方式仅支持 Windows".to_string());
+                }
+            }
+            "sh" => {
+                self.write_user_jvm_args(&server, &settings, managed_console_encoding)?;
+                let mut sh_cmd = Command::new("sh");
+                sh_cmd.arg(&startup_filename);
+                sh_cmd.arg("nogui");
+                sh_cmd.env("JAVA_HOME", &java_home_dir_str);
+                let existing_path = std::env::var("PATH").unwrap_or_default();
+                let path_value = if existing_path.is_empty() {
+                    java_bin_dir_str.clone()
+                } else {
+                    format!("{}:{}", java_bin_dir_str, existing_path)
+                };
+                sh_cmd.env("PATH", path_value);
+                sh_cmd
+            }
+            _ => {
+                let mut jar_cmd = Command::new(&server.java_path);
+                for arg in self.build_managed_jvm_args(&server, &settings, managed_console_encoding)
+                {
+                    jar_cmd.arg(arg);
+                }
+                jar_cmd.arg("-jar");
+                jar_cmd.arg(&startup_filename);
+                jar_cmd.arg("nogui");
+                jar_cmd
+            }
+        };
 
         cmd.current_dir(&server.path);
 
@@ -414,9 +528,11 @@ impl ServerManager {
 
         // 启动日志读取线程
         let logs_ref = &self.logs as *const Mutex<HashMap<String, Vec<String>>>;
+        let procs_ref = &self.processes as *const Mutex<HashMap<String, Child>>;
         let max_lines = settings.max_log_lines as usize;
         let lid = id.to_string();
         let ptr = logs_ref as usize;
+        let p_ptr = procs_ref as usize;
         let ml = max_lines;
         let log_path = log_file.clone();
 
@@ -426,6 +542,19 @@ impl ServerManager {
             let mut last_size = 0u64;
 
             loop {
+                // Check if process still exists in manager
+                let should_exit = unsafe {
+                    let m = &*(p_ptr as *const Mutex<HashMap<String, Child>>);
+                    if let Ok(procs) = m.lock() {
+                        !procs.contains_key(&lid)
+                    } else {
+                        false
+                    }
+                };
+                if should_exit {
+                    break;
+                }
+
                 std::thread::sleep(std::time::Duration::from_millis(500));
 
                 if let Ok(mut file) = std::fs::File::open(&log_path) {
@@ -440,7 +569,7 @@ impl ServerManager {
                                 let mut buffer = Vec::new();
 
                                 if file.read_to_end(&mut buffer).is_ok() {
-                                    let content = String::from_utf8_lossy(&buffer);
+                                    let content = decode_console_bytes(&buffer);
                                     for line in content.lines() {
                                         if !line.trim().is_empty() {
                                             if let Ok(mut l) = m.lock() {
@@ -489,6 +618,7 @@ impl ServerManager {
         };
 
         if !is_running {
+            self.clear_stopping(id);
             self.append_log(id, "[Sea Lantern] 服务器未运行");
             return Ok(());
         }
@@ -505,16 +635,19 @@ impl ServerManager {
                 match child.try_wait() {
                     Ok(Some(_)) => {
                         procs.remove(id);
+                        self.clear_stopping(id);
                         self.append_log(id, "[Sea Lantern] 服务器已正常停止");
                         return Ok(());
                     }
                     Ok(None) => {} // Still running
                     Err(_) => {
                         procs.remove(id);
+                        self.clear_stopping(id);
                         return Ok(());
                     }
                 }
             } else {
+                self.clear_stopping(id);
                 self.append_log(id, "[Sea Lantern] 服务器已停止");
                 return Ok(());
             }
@@ -527,7 +660,87 @@ impl ServerManager {
             let _ = child.wait();
             self.append_log(id, "[Sea Lantern] 服务器超时，已强制终止");
         }
+        self.clear_stopping(id);
         Ok(())
+    }
+
+    //预处理脚本函数实现
+    pub fn load_preload_script(&self, id: &str, server: &ServerInstance) -> Result<String, String> {
+        // Windows实现
+        #[cfg(target_os = "windows")]
+        {
+            let preload_script = std::path::Path::new(&server.path).join("preload.bat");
+            if preload_script.exists() {
+                println!("发现预加载脚本: {:?}", preload_script);
+                self.append_log(id, "[preload] 开始执行预加载脚本...");
+
+                // Windows 下执行 bat 文件，使用 CREATE_NO_WINDOW 避免弹窗
+                let mut cmd = Command::new("cmd");
+                cmd.args(["/c", preload_script.to_str().unwrap_or("preload.bat")])
+                    .current_dir(&server.path);
+
+                // 隐藏命令行窗口
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x08000000;
+                cmd.creation_flags(CREATE_NO_WINDOW);
+
+                match cmd.output() {
+                    Ok(result) => {
+                        if result.status.success() {
+                            if !result.stdout.is_empty() {
+                                let output = String::from_utf8_lossy(&result.stdout);
+                                for line in output.lines() {
+                                    self.append_log(id, &format!("[preload] {}", line));
+                                }
+                            }
+                            Ok("执行成功".to_string())
+                        } else {
+                            let error = String::from_utf8_lossy(&result.stderr);
+                            Err(format!("preload.bat 执行失败: {}", error))
+                        }
+                    }
+                    Err(e) => Err(e.to_string()),
+                }
+            } else {
+                Ok("未找到脚本".to_string())
+            }
+        }
+
+        // 非 Windows 实现
+        #[cfg(not(target_os = "windows"))]
+        {
+            let preload_script = std::path::Path::new(&server.path).join("preload.sh");
+            if preload_script.exists() {
+                println!("发现预加载脚本: {:?}", preload_script);
+                self.append_log(id, "[preload] 开始执行预加载脚本...");
+
+                // 非 Windows 系统下，作为 shell 脚本执行
+                match Command::new("sh")
+                    .arg(&preload_script)
+                    .current_dir(&server.path)
+                    .output()
+                {
+                    Ok(result) => {
+                        if result.status.success() {
+                            println!("preload.sh 执行成功");
+                            if !result.stdout.is_empty() {
+                                let output = String::from_utf8_lossy(&result.stdout);
+                                for line in output.lines() {
+                                    self.append_log(id, &format!("[preload] {}", line));
+                                }
+                            }
+                            Ok("执行成功".to_string())
+                        } else {
+                            let error = String::from_utf8_lossy(&result.stderr);
+                            Err(format!("preload.sh 执行失败: {}", error))
+                        }
+                    }
+                    Err(e) => Err(e.to_string()),
+                }
+            } else {
+                Ok("未找到脚本".to_string())
+            }
+        }
     }
 
     pub fn send_command(&self, id: &str, command: &str) -> Result<(), String> {
@@ -565,7 +778,9 @@ impl ServerManager {
         };
         ServerStatusInfo {
             id: id.to_string(),
-            status: if is_running {
+            status: if self.is_stopping(id) {
+                ServerStatus::Stopping
+            } else if is_running {
                 ServerStatus::Running
             } else {
                 ServerStatus::Stopped
@@ -617,6 +832,92 @@ impl ServerManager {
             let _ = self.stop_server(&id);
         }
     }
+
+    pub fn force_stop_all_servers(&self) {
+        let ids: Vec<String> = self.processes.lock().unwrap().keys().cloned().collect();
+        let mut procs = self.processes.lock().unwrap();
+        for id in ids {
+            if let Some(mut child) = procs.remove(&id) {
+                let _ = child.kill();
+                let _ = child.wait();
+                self.append_log(&id, "[Sea Lantern] 已强制终止服务器进程");
+            }
+        }
+    }
+
+    pub fn add_server_command(
+        &self,
+        server_id: &str,
+        name: &str,
+        command: &str,
+    ) -> Result<(), String> {
+        let mut servers = self.servers.lock().unwrap();
+        if let Some(server) = servers.iter_mut().find(|s| s.id == server_id) {
+            let command_id = uuid::Uuid::new_v4().to_string();
+            server.commands.push(ServerCommand {
+                id: command_id,
+                name: name.to_string(),
+                command: command.to_string(),
+            });
+            drop(servers);
+            self.save();
+            Ok(())
+        } else {
+            Err("未找到服务器".to_string())
+        }
+    }
+
+    pub fn update_server_command(
+        &self,
+        server_id: &str,
+        command_id: &str,
+        name: &str,
+        command: &str,
+    ) -> Result<(), String> {
+        let mut servers = self.servers.lock().unwrap();
+        if let Some(server) = servers.iter_mut().find(|s| s.id == server_id) {
+            if let Some(cmd) = server.commands.iter_mut().find(|c| c.id == command_id) {
+                cmd.name = name.to_string();
+                cmd.command = command.to_string();
+                drop(servers);
+                self.save();
+                Ok(())
+            } else {
+                Err("未找到自定义指令".to_string())
+            }
+        } else {
+            Err("未找到服务器".to_string())
+        }
+    }
+
+    pub fn delete_server_command(&self, server_id: &str, command_id: &str) -> Result<(), String> {
+        let mut servers = self.servers.lock().unwrap();
+        if let Some(server) = servers.iter_mut().find(|s| s.id == server_id) {
+            let initial_len = server.commands.len();
+            server.commands.retain(|c| c.id != command_id);
+            if initial_len != server.commands.len() {
+                drop(servers);
+                self.save();
+                Ok(())
+            } else {
+                Err("未找到自定义指令".to_string())
+            }
+        } else {
+            Err("未找到服务器".to_string())
+        }
+    }
+
+    pub fn update_server_name(&self, id: &str, name: &str) -> Result<(), String> {
+        let mut servers = self.servers.lock().unwrap();
+        if let Some(server) = servers.iter_mut().find(|s| s.id == id) {
+            server.name = name.to_string();
+            drop(servers);
+            self.save();
+            Ok(())
+        } else {
+            Err("未找到服务器".to_string())
+        }
+    }
 }
 
 fn get_data_dir() -> String {
@@ -632,6 +933,92 @@ fn get_data_dir() -> String {
     // 如果获取失败，使用当前工作目录
     println!("警告: 无法获取可执行文件目录，使用当前目录");
     ".".to_string()
+}
+
+fn normalize_startup_mode(mode: &str) -> &str {
+    match mode.to_ascii_lowercase().as_str() {
+        "bat" => "bat",
+        "sh" => "sh",
+        _ => "jar",
+    }
+}
+
+fn resolve_managed_console_encoding(
+    startup_mode: &str,
+    startup_path: &std::path::Path,
+) -> ManagedConsoleEncoding {
+    #[cfg(target_os = "windows")]
+    {
+        if startup_mode == "bat" {
+            return detect_windows_batch_encoding(startup_path);
+        }
+    }
+
+    let _ = startup_mode;
+    let _ = startup_path;
+    ManagedConsoleEncoding::Utf8
+}
+
+#[cfg(target_os = "windows")]
+fn detect_windows_batch_encoding(startup_path: &std::path::Path) -> ManagedConsoleEncoding {
+    let bytes = match std::fs::read(startup_path) {
+        Ok(bytes) => bytes,
+        Err(_) => return ManagedConsoleEncoding::Utf8,
+    };
+
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) || std::str::from_utf8(&bytes).is_ok() {
+        ManagedConsoleEncoding::Utf8
+    } else {
+        ManagedConsoleEncoding::Gbk
+    }
+}
+
+fn parse_java_major_version(raw_version: &str) -> Option<u32> {
+    let version = raw_version.trim().trim_matches('"');
+    let mut parts = version.split('.');
+    let first = parts.next()?.parse::<u32>().ok()?;
+    if first == 1 {
+        parts.next()?.parse::<u32>().ok()
+    } else {
+        Some(first)
+    }
+}
+
+fn detect_java_major_version(java_path: &str) -> Option<u32> {
+    let output = Command::new(java_path).arg("-version").output().ok()?;
+    let text = if output.stderr.is_empty() {
+        decode_console_bytes(&output.stdout)
+    } else {
+        decode_console_bytes(&output.stderr)
+    };
+
+    for line in text.lines() {
+        if line.contains("version") {
+            let mut segments = line.split('"');
+            let _ = segments.next();
+            if let Some(version_text) = segments.next() {
+                return parse_java_major_version(version_text);
+            }
+        }
+    }
+
+    None
+}
+
+fn decode_console_bytes(bytes: &[u8]) -> String {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return text.to_string();
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let (decoded, _, _) = encoding_rs::GBK.decode(bytes);
+        decoded.into_owned()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
 }
 
 fn find_server_jar(modpack_path: &std::path::Path) -> Result<String, String> {

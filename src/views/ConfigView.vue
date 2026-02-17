@@ -1,21 +1,22 @@
 <script setup lang="ts">
-import { ref, onMounted, computed, watch } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted, onActivated } from "vue";
 import { useRoute } from "vue-router";
-import SLCard from "../components/common/SLCard.vue";
-import SLButton from "../components/common/SLButton.vue";
-import SLInput from "../components/common/SLInput.vue";
-import SLSwitch from "../components/common/SLSwitch.vue";
-import SLSelect from "../components/common/SLSelect.vue";
-import SLBadge from "../components/common/SLBadge.vue";
 import SLSpinner from "../components/common/SLSpinner.vue";
-import { configApi, type ConfigEntry } from "../api/config";
+import SLSwitch from "../components/common/SLSwitch.vue";
+import { configApi } from "../api/config";
+import type { ConfigEntry as ConfigEntryType } from "../api/config";
 import { useServerStore } from "../stores/serverStore";
 import { i18n } from "../locales";
+
+// 导入拆分后的组件
+import ConfigToolbar from "../components/config/ConfigToolbar.vue";
+import ConfigCategories from "../components/config/ConfigCategories.vue";
+import ConfigEntry from "../components/config/ConfigEntry.vue";
 
 const route = useRoute();
 const store = useServerStore();
 
-const entries = ref<ConfigEntry[]>([]);
+const entries = ref<ConfigEntryType[]>([]);
 const editValues = ref<Record<string, string>>({});
 const loading = ref(false);
 const saving = ref(false);
@@ -23,33 +24,24 @@ const error = ref<string | null>(null);
 const successMsg = ref<string | null>(null);
 const searchQuery = ref("");
 const activeCategory = ref("all");
-const selectedServerId = ref("");
-
-const serverOptions = computed(() => store.servers.map((s) => ({ label: s.name, value: s.id })));
-
 const serverPath = computed(() => {
-  const server = store.servers.find((s) => s.id === selectedServerId.value);
+  const server = store.servers.find((s) => s.id === store.currentServerId);
   return server?.path || "";
 });
+
+// 自动保存相关
+const autoSaveDebounceTimer = ref<number | null>(null);
+const AUTO_SAVE_DELAY = 1000; // 1秒防抖延迟
+
+const currentServerId = computed(() => store.currentServerId);
 
 const categories = computed(() => {
   const cats = new Set(entries.value.map((e) => e.category));
   return ["all", ...Array.from(cats)];
 });
 
-const categoryLabels: Record<string, string> = {
-  all: "全部",
-  network: "网络",
-  player: "玩家",
-  game: "游戏",
-  world: "世界",
-  performance: "性能",
-  display: "显示",
-  other: "其他",
-};
-
 const filteredEntries = computed(() => {
-  return entries.value.filter((e) => {
+  return entries.value.filter((e: ConfigEntryType) => {
     const matchCat = activeCategory.value === "all" || e.category === activeCategory.value;
     const matchSearch =
       !searchQuery.value ||
@@ -63,19 +55,33 @@ onMounted(async () => {
   await store.refreshList();
   const routeId = route.params.id as string;
   if (routeId) {
-    selectedServerId.value = routeId;
-  } else if (store.currentServerId) {
-    selectedServerId.value = store.currentServerId;
-  } else if (store.servers.length > 0) {
-    selectedServerId.value = store.servers[0].id;
+    store.setCurrentServer(routeId);
+  } else if (!store.currentServerId && store.servers.length > 0) {
+    store.setCurrentServer(store.servers[0].id);
+  }
+  await loadProperties();
+});
+
+onUnmounted(() => {
+  // 清理防抖计时器
+  if (autoSaveDebounceTimer.value) {
+    clearTimeout(autoSaveDebounceTimer.value);
   }
 });
 
-watch(selectedServerId, async () => {
-  if (selectedServerId.value) {
-    await loadProperties();
-  }
+onActivated(async () => {
+  // 当组件被激活时自动刷新配置
+  await loadProperties();
 });
+
+watch(
+  () => store.currentServerId,
+  async () => {
+    if (store.currentServerId) {
+      await loadProperties();
+    }
+  },
+);
 
 async function loadProperties() {
   if (!serverPath.value) return;
@@ -83,7 +89,7 @@ async function loadProperties() {
   error.value = null;
   try {
     const result = await configApi.readServerProperties(serverPath.value);
-    entries.value = result.entries;
+    entries.value = result.entries as ConfigEntryType[];
     editValues.value = { ...result.raw };
   } catch (e) {
     error.value = String(e);
@@ -101,7 +107,7 @@ async function saveProperties() {
   successMsg.value = null;
   try {
     await configApi.writeServerProperties(serverPath.value, editValues.value);
-    successMsg.value = "配置已保存";
+    successMsg.value = i18n.t("common.config_saved");
     setTimeout(() => (successMsg.value = null), 3000);
   } catch (e) {
     error.value = String(e);
@@ -112,37 +118,59 @@ async function saveProperties() {
 
 function updateValue(key: string, value: string | boolean) {
   editValues.value[key] = String(value);
+  
+  // 启动自动保存防抖
+  if (autoSaveDebounceTimer.value) {
+    clearTimeout(autoSaveDebounceTimer.value);
+  }
+  
+  autoSaveDebounceTimer.value = window.setTimeout(() => {
+    autoSaveProperties();
+  }, AUTO_SAVE_DELAY);
 }
 
-function getBoolValue(key: string): boolean {
-  return editValues.value[key] === "true";
+function autoSaveProperties() {
+  if (!serverPath.value) return;
+  
+  saving.value = true;
+  error.value = null;
+  successMsg.value = null;
+  
+  configApi.writeServerProperties(serverPath.value, editValues.value)
+    .then(() => {
+      successMsg.value = i18n.t("config.saved");
+      setTimeout(() => (successMsg.value = null), 3000);
+    })
+    .catch((e) => {
+      error.value = String(e);
+    })
+    .finally(() => {
+      saving.value = false;
+    });
 }
 
-function getServerName(): string {
-  const s = store.servers.find((s) => s.id === selectedServerId.value);
-  return s ? s.name : "";
+function handleCategoryChange(category: string) {
+  activeCategory.value = category;
+  // 滚动到顶部
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function handleSearchUpdate(value: string) {
+  searchQuery.value = value;
 }
 </script>
 
 <template>
   <div class="config-view animate-fade-in-up">
-    <!-- Server Selector -->
+    <!-- 服务器配置编辑 -->
     <div class="config-header">
-      <div class="server-picker">
-        <SLSelect
-          :label="i18n.t('common.config_edit')"
-          :options="serverOptions"
-          v-model="selectedServerId"
-          :placeholder="i18n.t('config.select_server')"
-        />
-      </div>
-      <div v-if="selectedServerId" class="server-path-display text-mono text-caption">
+      <div class="server-path-display text-mono text-caption">
         {{ serverPath }}/server.properties
       </div>
     </div>
 
-    <div v-if="!selectedServerId" class="empty-state">
-      <p class="text-body">{{ i18n.t('config.no_server') }}</p>
+    <div v-if="!currentServerId" class="empty-state">
+      <p class="text-body">{{ i18n.t("config.no_server") }}</p>
     </div>
 
     <template v-else>
@@ -151,28 +179,21 @@ function getServerName(): string {
         <button class="banner-close" @click="error = null">x</button>
       </div>
       <div v-if="successMsg" class="success-banner">
-        <span>{{ i18n.t('config.saved') }}</span>
+        <span>{{ i18n.t("config.saved") }}</span>
       </div>
 
-      <div class="config-toolbar">
-        <div class="toolbar-left">
-          <SLInput :placeholder="i18n.t('config.search')" v-model="searchQuery" />
-        </div>
-        <div class="toolbar-right">
-          <SLButton variant="secondary" size="sm" @click="loadProperties">{{ i18n.t('config.reload') }}</SLButton>
-          <SLButton variant="primary" size="sm" :loading="saving" @click="saveProperties">{{ i18n.t('config.save') }}</SLButton>
-        </div>
-      </div>
-
-      <div class="category-tabs">
-        <button v-for="cat in categories" :key="cat" class="category-tab" :class="{ active: activeCategory === cat }" @click="activeCategory = cat">
-          {{ i18n.t(`config.categories.${cat}`) || cat }}
-        </button>
-      </div>
+      <!-- 分类选择和搜索 -->
+      <ConfigCategories
+        :categories="categories"
+        :activeCategory="activeCategory"
+        :searchQuery="searchQuery"
+        @updateCategory="handleCategoryChange"
+        @updateSearch="handleSearchUpdate"
+      />
 
       <div v-if="loading" class="loading-state">
-        <div class="spinner"></div>
-        <span>{{ i18n.t('config.loading') }}</span>
+        <SLSpinner size="lg" />
+        <span>{{ i18n.t("config.loading") }}</span>
       </div>
 
       <div v-else class="config-entries">
@@ -180,19 +201,55 @@ function getServerName(): string {
           <div class="entry-header">
             <div class="entry-key-row">
               <span class="entry-key text-mono">{{ entry.key }}</span>
-              <SLBadge :text="i18n.t(`config.categories.${entry.category}`) || entry.category" variant="neutral" />
             </div>
-            <p v-if="entry.description" class="entry-desc text-caption">{{ entry.description }}</p>
+            <p v-if="i18n.t(`config.properties.${entry.key}`)" class="entry-desc text-caption">
+              {{ i18n.t(`config.properties.${entry.key}`) }}
+            </p>
           </div>
           <div class="entry-control">
-            <SLSwitch v-if="entry.value_type === 'boolean'" :modelValue="getBoolValue(entry.key)" @update:modelValue="updateValue(entry.key, $event)" />
-            <SLSelect v-else-if="entry.key === 'gamemode'" :modelValue="editValues[entry.key]" :options="[{label:i18n.t('config.gamemode.survival'),value:'survival'},{label:i18n.t('config.gamemode.creative'),value:'creative'},{label:i18n.t('config.gamemode.adventure'),value:'adventure'},{label:i18n.t('config.gamemode.spectator'),value:'spectator'}]" @update:modelValue="updateValue(entry.key, $event as string)" />
-            <SLSelect v-else-if="entry.key === 'difficulty'" :modelValue="editValues[entry.key]" :options="[{label:i18n.t('config.difficulty.peaceful'),value:'peaceful'},{label:i18n.t('config.difficulty.easy'),value:'easy'},{label:i18n.t('config.difficulty.normal'),value:'normal'},{label:i18n.t('config.difficulty.hard'),value:'hard'}]" @update:modelValue="updateValue(entry.key, $event as string)" />
-            <SLInput v-else :modelValue="editValues[entry.key]" :type="entry.value_type === 'number' ? 'number' : 'text'" :placeholder="entry.default_value" @update:modelValue="updateValue(entry.key, $event)" />
+            <template v-if="entry.value_type === 'boolean' || editValues[entry.key] === 'true' || editValues[entry.key] === 'false'">
+              <SLSwitch
+                :modelValue="editValues[entry.key] === 'true'"
+                @update:modelValue="updateValue(entry.key, $event)"
+              />
+            </template>
+            <template v-else-if="entry.key === 'gamemode'">
+              <select
+                :value="editValues[entry.key]"
+                @change="updateValue(entry.key, $event.target.value)"
+                class="select"
+              >
+                <option value="survival">{{ i18n.t("config.gamemode.survival") }}</option>
+                <option value="creative">{{ i18n.t("config.gamemode.creative") }}</option>
+                <option value="adventure">{{ i18n.t("config.gamemode.adventure") }}</option>
+                <option value="spectator">{{ i18n.t("config.gamemode.spectator") }}</option>
+              </select>
+            </template>
+            <template v-else-if="entry.key === 'difficulty'">
+              <select
+                :value="editValues[entry.key]"
+                @change="updateValue(entry.key, $event.target.value)"
+                class="select"
+              >
+                <option value="peaceful">{{ i18n.t("config.difficulty.peaceful") }}</option>
+                <option value="easy">{{ i18n.t("config.difficulty.easy") }}</option>
+                <option value="normal">{{ i18n.t("config.difficulty.normal") }}</option>
+                <option value="hard">{{ i18n.t("config.difficulty.hard") }}</option>
+              </select>
+            </template>
+            <template v-else>
+              <input
+                :value="editValues[entry.key]"
+                :type="entry.value_type === 'number' ? 'number' : 'text'"
+                :placeholder="entry.default_value"
+                @input="updateValue(entry.key, $event.target.value)"
+                class="input"
+              />
+            </template>
           </div>
         </div>
         <div v-if="filteredEntries.length === 0 && !loading" class="empty-state">
-          <p class="text-caption">{{ i18n.t('config.no_config') }}</p>
+          <p class="text-caption">{{ i18n.t("config.no_config") }}</p>
         </div>
       </div>
     </template>
@@ -209,9 +266,6 @@ function getServerName(): string {
   display: flex;
   flex-direction: column;
   gap: var(--sl-space-sm);
-}
-.server-picker {
-  max-width: 400px;
 }
 .server-path-display {
   color: var(--sl-text-tertiary);
@@ -244,42 +298,10 @@ function getServerName(): string {
 }
 .banner-close {
   font-weight: 600;
-}
-.config-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sl-space-md);
-}
-.toolbar-left {
-  flex: 1;
-  max-width: 360px;
-}
-.toolbar-right {
-  display: flex;
-  gap: var(--sl-space-xs);
-}
-.category-tabs {
-  display: flex;
-  gap: 2px;
-  background: var(--sl-bg-secondary);
-  border-radius: var(--sl-radius-md);
-  padding: 3px;
-  width: fit-content;
-  flex-wrap: wrap;
-}
-.category-tab {
-  padding: 6px 14px;
-  border-radius: var(--sl-radius-sm);
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--sl-text-secondary);
-  transition: all var(--sl-transition-fast);
-}
-.category-tab.active {
-  background: var(--sl-surface);
-  color: var(--sl-primary);
-  box-shadow: var(--sl-shadow-sm);
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: inherit;
 }
 .loading-state {
   display: flex;
@@ -300,6 +322,14 @@ function getServerName(): string {
   justify-content: space-between;
   padding: var(--sl-space-md);
   gap: var(--sl-space-lg);
+  background: var(--sl-surface);
+  border: 1px solid var(--sl-border-light);
+  border-radius: var(--sl-radius-md);
+  transition: all var(--sl-transition-fast);
+}
+.config-entry:hover {
+  border-color: var(--sl-border);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 .entry-header {
   flex: 1;
@@ -321,5 +351,21 @@ function getServerName(): string {
 .entry-control {
   flex-shrink: 0;
   min-width: 200px;
+}
+
+.select,
+.input {
+  width: 200px;
+  padding: 6px 10px;
+  border: 1px solid var(--sl-border);
+  border-radius: var(--sl-radius-sm);
+  background: var(--sl-bg-secondary);
+  color: var(--sl-text-primary);
+}
+.select:focus,
+.input:focus {
+  outline: none;
+  border-color: var(--sl-primary);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
 }
 </style>

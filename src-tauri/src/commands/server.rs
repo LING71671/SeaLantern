@@ -16,6 +16,7 @@ pub fn create_server(
     port: u16,
     java_path: String,
     jar_path: String,
+    startup_mode: String,
 ) -> Result<ServerInstance, String> {
     let req = CreateServerRequest {
         name,
@@ -26,14 +27,17 @@ pub fn create_server(
         port,
         java_path,
         jar_path,
+        startup_mode,
     };
     manager().create_server(req)
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn import_server(
     name: String,
     jar_path: String,
+    startup_mode: String,
     java_path: String,
     max_memory: u32,
     min_memory: u32,
@@ -43,6 +47,7 @@ pub fn import_server(
     let req = ImportServerRequest {
         name,
         jar_path,
+        startup_mode,
         java_path,
         max_memory,
         min_memory,
@@ -79,7 +84,13 @@ pub fn start_server(id: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn stop_server(id: String) -> Result<(), String> {
-    manager().stop_server(&id)
+    manager().request_stop_server(&id)
+}
+
+#[tauri::command]
+pub fn force_stop_all_servers() -> Result<(), String> {
+    manager().force_stop_all_servers();
+    Ok(())
 }
 
 #[tauri::command]
@@ -105,4 +116,29 @@ pub fn delete_server(id: String) -> Result<(), String> {
 #[tauri::command]
 pub fn get_server_logs(id: String, since: usize) -> Vec<String> {
     manager().get_logs(&id, since)
+}
+
+#[tauri::command]
+pub fn add_server_command(id: String, name: String, command: String) -> Result<(), String> {
+    manager().add_server_command(&id, &name, &command)
+}
+
+#[tauri::command]
+pub fn update_server_command(
+    id: String,
+    command_id: String,
+    name: String,
+    command: String,
+) -> Result<(), String> {
+    manager().update_server_command(&id, &command_id, &name, &command)
+}
+
+#[tauri::command]
+pub fn delete_server_command(id: String, command_id: String) -> Result<(), String> {
+    manager().delete_server_command(&id, &command_id)
+}
+
+#[tauri::command]
+pub fn update_server_name(id: String, name: String) -> Result<(), String> {
+    manager().update_server_name(&id, &name)
 }

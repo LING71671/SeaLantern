@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, onUnmounted, computed, onMounted } from "vue";
+import { i18n } from "../../locales";
 
 type NotificationType = "success" | "error" | "warning" | "info";
 type Position =
@@ -239,7 +240,11 @@ onUnmounted(() => {
             <div v-if="title" class="sl-notify__title">{{ title }}</div>
             <div class="sl-notify__message">{{ message }}</div>
           </div>
-          <button class="sl-notify__close" @click.stop="handleClose" aria-label="关闭通知">
+          <button
+            class="sl-notify__close"
+            @click.stop="handleClose"
+            :aria-label="i18n.t('common.close_notification')"
+          >
             <svg
               width="18"
               height="18"
@@ -290,7 +295,7 @@ onUnmounted(() => {
   width: 360px;
   max-width: 90vw;
   color: #fff;
-  border-radius: 12px;
+  border-radius: var(--sl-radius-lg);
   box-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.4);
   cursor: pointer;
   overflow: hidden;
@@ -382,7 +387,7 @@ onUnmounted(() => {
   background: rgba(255, 255, 255, 0.15);
   border: none;
   color: #fff;
-  border-radius: 6px;
+  border-radius: var(--sl-radius-sm);
   padding: 4px;
   cursor: pointer;
   transition: all 0.2s;

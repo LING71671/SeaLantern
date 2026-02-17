@@ -1,9 +1,14 @@
+use once_cell::sync::Lazy;
+use std::sync::Mutex;
 use sysinfo::{Disks, Networks, System};
 use tauri_plugin_dialog::DialogExt;
 
+static SYSTEM: Lazy<Mutex<System>> = Lazy::new(|| Mutex::new(System::new_all()));
+
 #[tauri::command]
 pub fn get_system_info() -> Result<serde_json::Value, String> {
-    let mut sys = System::new_all();
+    let mut sys = SYSTEM.lock().map_err(|e| e.to_string())?;
+
     sys.refresh_all();
 
     let cpu_usage = sys.global_cpu_usage();
@@ -56,8 +61,33 @@ pub fn get_system_info() -> Result<serde_json::Value, String> {
         })
         .collect();
 
-    let total_disk_space: u64 = disks.iter().map(|d| d.total_space()).sum();
-    let total_disk_available: u64 = disks.iter().map(|d| d.available_space()).sum();
+    // 针对不同平台计算磁盘空间
+    let (total_disk_space, total_disk_available): (u64, u64) = {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            // 在 macOS 和 Linux 上，只计算根目录 (/) 的磁盘空间
+            if let Some(root_disk) = disks
+                .iter()
+                .find(|d| d.mount_point().to_string_lossy() == "/")
+            {
+                (root_disk.total_space(), root_disk.available_space())
+            } else {
+                // 如果找不到根目录，回退到计算所有磁盘
+                (
+                    disks.iter().map(|d| d.total_space()).sum(),
+                    disks.iter().map(|d| d.available_space()).sum(),
+                )
+            }
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            // 在其他平台，继续计算所有磁盘空间
+            (
+                disks.iter().map(|d| d.total_space()).sum(),
+                disks.iter().map(|d| d.available_space()).sum(),
+            )
+        }
+    };
     let total_disk_used = total_disk_space.saturating_sub(total_disk_available);
     let total_disk_usage = if total_disk_space > 0 {
         (total_disk_used as f64 / total_disk_space as f64 * 100.0) as f32
@@ -147,6 +177,43 @@ pub async fn pick_jar_file(app: tauri::AppHandle) -> Result<Option<String>, Stri
 }
 
 #[tauri::command]
+pub async fn pick_startup_file(
+    app: tauri::AppHandle,
+    mode: String,
+) -> Result<Option<String>, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mode = mode.to_ascii_lowercase();
+
+    let mut dialog = app.dialog().file();
+    match mode.as_str() {
+        "bat" => {
+            dialog = dialog
+                .set_title("Select server BAT file")
+                .add_filter("BAT Files", &["bat"]);
+        }
+        "sh" => {
+            dialog = dialog
+                .set_title("Select server SH file")
+                .add_filter("Shell Scripts", &["sh"]);
+        }
+        _ => {
+            dialog = dialog
+                .set_title("Select server JAR file")
+                .add_filter("JAR Files", &["jar"]);
+        }
+    }
+
+    dialog
+        .add_filter("All Files", &["*"])
+        .pick_file(move |path| {
+            let result = path.map(|p| p.to_string());
+            let _ = tx.send(result);
+        });
+
+    rx.recv().map_err(|e| format!("Dialog error: {}", e))
+}
+
+#[tauri::command]
 pub async fn pick_java_file(app: tauri::AppHandle) -> Result<Option<String>, String> {
     let (tx, rx) = std::sync::mpsc::channel();
 
@@ -193,4 +260,48 @@ pub async fn pick_image_file(app: tauri::AppHandle) -> Result<Option<String>, St
         });
 
     rx.recv().map_err(|e| format!("Dialog error: {}", e))
+}
+
+#[tauri::command]
+pub fn open_folder(path: String) -> Result<(), String> {
+    use std::process::Command;
+
+    #[cfg(target_os = "windows")]
+    {
+        let status = Command::new("explorer")
+            .arg(path)
+            .status()
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("Failed to open folder".to_string())
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("open")
+            .arg(path)
+            .status()
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("Failed to open folder".to_string())
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let status = Command::new("xdg-open")
+            .arg(path)
+            .status()
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("Failed to open folder".to_string())
+        }
+    }
 }

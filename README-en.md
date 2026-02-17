@@ -1,7 +1,21 @@
+<div align="center">
+<img src="https://gitee.com/fps_z/SeaLantern/raw/master/src/assets/logo.svg" alt="logo" width="200" height="200">
 
-# 海晶灯（Sea Lantern）
+# Sea Lantern(海晶灯)
 
 Minecraft Server Manager · Tauri 2 + Rust + Vue 3
+
+[![star](https://gitee.com/fps_z/SeaLantern/badge/star.svg?theme=dark)](https://gitee.com/fps_z/SeaLantern/stargazers)[![fork](https://gitee.com/fps_z/SeaLantern/badge/fork.svg?theme=dark)](https://gitee.com/fps_z/SeaLantern/members)
+[![GitHub Repo stars](https://img.shields.io/github/stars/FPSZ/SeaLantern?style=flat&logo=github&label=stars)](https://github.com/FPSZ/SeaLantern)[![GitHub forks](https://img.shields.io/github/forks/FPSZ/SeaLantern?style=flat&logo=github&label=forks)](https://github.com/FPSZ/SeaLantern/network/members)
+[![最新版本](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fgitee.com%2Fapi%2Fv5%2Frepos%2FFPS_Z%2FSeaLantern%2Freleases%2Flatest&query=%24.tag_name&label=latest_version&color=brightgreen&logo=gitee&style=flat)](https://gitee.com/FPS_Z/SeaLantern/releases)[![GitHub release](https://img.shields.io/github/v/release/FPSZ/SeaLantern?style=flat&logo=github&label=latest)](https://github.com/FPSZ/SeaLantern/releases)
+====
+
+</div>
+
+> 您正在浏览英文版的readme，点击[此处](README.md)前往简体中文版
+
+> You are browsing the English version of the readme. Click [here](README.md) to go to the Simplified Chinese version
+
 ![img](https://gitee.com/fps_z/markdown/raw/master/img/about2.png)
 
 ## What can it do?
@@ -13,6 +27,7 @@ Import a server JAR file,choose a Java version,then click START!It's that simple
 - Whitelist,Ban,OP Manage easily.
 - It will shut server down when you close the software which won't let your saves be damaged.
 - Check update,update with one click
+
 ## Quick Start
 
 - If you are a user,download the software from RELEASE
@@ -32,7 +47,7 @@ Build release：
 npm run tauri build
 ```
 
-The built things are in  `src-tauri/target/release/bundle/`.
+The built things are in `src-tauri/target/release/bundle/`.
 
 ### Code Quality Check
 
@@ -113,6 +128,12 @@ sea-lantern/
 │   │   │
 │   │   └── splash/                   Splash screen
 │   │       └── SplashScreen.vue     Loading animation when app starts
+│   │
+│   ├── locales/                      国际化资源
+│   │   ├── index.ts                  语言文件入口
+│   │   ├── en-US.json                英文翻译
+│   │   ├── zh-CN.json                简体中文翻译
+│   │   └── zh-TW.json                繁体中文翻译
 │   │
 │   ├── views/                         Page views (one per route)
 │   │   ├── HomeView.vue              Home page (server list, system status)
@@ -208,53 +229,9 @@ sea-lantern/
 └── README.md                          Project documentation (what you're reading now)
 ```
 
-## Implemented Features
-
-### Server Management
-
-- Create servers by importing JAR files, with one-click start and stop functionality
-- Data saved to JSON files, ensuring persistence across application restarts
-
-### Real-time Console
-
-- Backend uses independent threads to read stdout and stderr streams
-- Frontend polls for new logs every 800ms
-- Supports command input, Tab completion, up/down arrow history navigation, and shortcut command buttons
-- Logs stored in global store, persisting when switching between pages
-  
-### Java Detection
-
-- Scans all drives from A to Z on application startup
-- Recursively searches common installation paths, including Minecraft's bundled Java in .minecraft/runtime
-- Sorts by version number and marks recommended Java versions
-
-### Configuration Editing
-
-- Reads server.properties and parses it into structured data with descriptions and categories
-- Boolean values use toggle switches, enums use dropdown selectors, numbers/strings use input fields
-- Changes are written directly back to the configuration file
-
-### Player Management
-
-- Reads whitelist.json / banned-players.json / ops.json to display player lists
-- Adds/removes players by sending Minecraft commands to the running server
-- Parses server logs to determine online player status
-
-### Application Settings
-
-- Automatically stops all servers when closing the application (enabled by default)
-- Auto-accepts EULA agreements
-- Configurable default memory allocation, port numbers, and JVM parameters
-
-### Software Updates
-
-- Checks Gitee releases to retrieve the latest version information
-- Displays update logs and provides one-click access to download links
-- Automatically compares version numbers and prompts users for updates
-
 ## Planned Features
 
-Placeholders have been reserved for these features with existing code 
+Placeholders have been reserved for these features with existing code
 skeletons—waiting for your contributions:
 
 - Download Center - Download server cores, plugins, and mods
@@ -263,17 +240,17 @@ skeletons—waiting for your contributions:
 - Scheduled Tasks - Automatic restarts, scheduled backups, and scheduled command execution
 - Resource Management - Search and install plugins/mods from Modrinth / CurseForge
 - Dark Theme - CSS variables are already configured; just add a dark mode value set
-- Internationalization - Currently hardcoded in Chinese; can be extracted into language files(Thanks to https://github.com/FPSZ/SeaLantern/pull/20)
 
 ## Contributing
 
 Contributions are welcome! Before you start, please read the [Contributing Guidelines](CONTRIBUTING-en.md) to understand code standards and development workflows.
 
 The UI is also fully customizable:
+
 - Colors are managed via CSS variables
 - Components are modular—replace any part you dislike
-Want to create a theme skin? Go for it.
-Want to completely redesign the layout? That's fine too.
+  Want to create a theme skin? Go for it.
+  Want to completely redesign the layout? That's fine too.
 
 ### How to Contribute
 
@@ -293,7 +270,7 @@ If you are going to add a「Save Management」：
 1. Create `backup_manager.rs` under `src-tauri/src/services/`,code the logic.
 2. Create `backup.rs` under `src-tauri/src/commands/`,code the Tauri command
 3. Add `pub mod backup` into `commands/mod.rs`
-4. Regist the command in `lib.rs`'s  `generate_handler!` macro.
+4. Regist the command in `lib.rs`'s `generate_handler!` macro.
 
 **Fronted**：
 
@@ -309,6 +286,18 @@ Frontend/Backend each 3 files,Change one line each for the router and the sideba
 GPLv3
 
 ## Thank
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=FPSZ/SeaLantern&type=Date)](https://star-history.com/#FPSZ/SeaLantern&Date)
+
+## Contributors
+
+Thanks to everyone who contributed to Sea Lantern!
+
+[![Contributors](https://contrib.rocks/image?repo=FPSZ/SeaLantern)](https://github.com/FPSZ/SeaLantern/graphs/contributors)
+
+## Acknowledgments
 
 Sea Lantern is an OPEN SOURCE project,Complies with the GPLv3 license.
 

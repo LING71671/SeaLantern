@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, nextTick, watch } from "vue";
 import { useRouter } from "vue-router";
 import SLCard from "../components/common/SLCard.vue";
 import SLButton from "../components/common/SLButton.vue";
@@ -16,12 +16,15 @@ import { i18n } from "../locales";
 
 const router = useRouter();
 const store = useServerStore();
+const startupModeIndicator = ref<HTMLElement | null>(null);
 
 const serverName = ref("My Server");
 const maxMemory = ref("2048");
 const minMemory = ref("512");
 const port = ref("25565");
 const jarPath = ref("");
+type StartupMode = "jar" | "bat" | "sh";
+const startupMode = ref<StartupMode>("jar");
 const selectedJava = ref("");
 const onlineMode = ref(true);
 
@@ -82,14 +85,51 @@ async function detectJava() {
 
 async function pickJarFile() {
   try {
-    const result = await systemApi.pickJarFile();
+    const result = await systemApi.pickStartupFile(startupMode.value);
     if (result) {
       jarPath.value = result;
+    } else {
+      // 重置 jarPath，防炸...
+      jarPath.value = "";
     }
   } catch (e) {
     console.error("Pick file error:", e);
+    jarPath.value = "";
   }
 }
+
+function setStartupMode(mode: StartupMode) {
+  if (startupMode.value === mode) {
+    return;
+  }
+  startupMode.value = mode;
+  jarPath.value = "";
+  updateStartupModeIndicator();
+}
+
+// 更新启动方式指示器位置
+function updateStartupModeIndicator() {
+  nextTick(() => {
+    if (!startupModeIndicator.value) return;
+
+    const activeTab = document.querySelector(".startup-mode-tab.active");
+    if (activeTab) {
+      const { offsetLeft, offsetWidth } = activeTab as HTMLElement;
+      startupModeIndicator.value.style.left = `${offsetLeft}px`;
+      startupModeIndicator.value.style.width = `${offsetWidth}px`;
+    }
+  });
+}
+
+// 监听启动方式变化，更新指示器位置
+watch(startupMode, () => {
+  updateStartupModeIndicator();
+});
+
+// 组件挂载后初始化指示器位置
+onMounted(() => {
+  updateStartupModeIndicator();
+});
 
 async function pickJavaFile() {
   try {
@@ -106,15 +146,20 @@ async function handleCreate() {
   errorMsg.value = null;
 
   if (!jarPath.value) {
-    errorMsg.value = "请选择服务端 JAR 文件";
+    await pickJarFile();
+  }
+
+  // 选择文件后检查其他条件
+  if (!jarPath.value) {
+    // 用户取消了文件选择，不显示错误信息
     return;
   }
   if (!selectedJava.value) {
-    errorMsg.value = "请选择 Java 路径";
+    errorMsg.value = i18n.t("common.select_java_path");
     return;
   }
   if (!serverName.value.trim()) {
-    errorMsg.value = "请输入服务器名称";
+    errorMsg.value = i18n.t("common.enter_server_name");
     return;
   }
 
@@ -123,6 +168,7 @@ async function handleCreate() {
     await serverApi.importServer({
       name: serverName.value,
       jarPath: jarPath.value,
+      startupMode: startupMode.value,
       javaPath: selectedJava.value,
       maxMemory: parseInt(maxMemory.value) || 2048,
       minMemory: parseInt(minMemory.value) || 512,
@@ -138,17 +184,56 @@ async function handleCreate() {
   }
 }
 
-function getJavaLabel(java: JavaInfo): string {
-  const type = java.major_version <= 8 ? "JRE" : "JDK";
-  const arch = java.is_64bit ? "64-bit" : "32-bit";
-  return `${type} ${java.major_version} (${java.version}) - ${java.vendor} [${arch}]`;
+function getJavaLabel(java: JavaInfo): { label: string; subLabel: string } {
+  // 简化 Java 显示名称
+  // label: 简短名称（如 "Java 17 Eclipse Temurin 64-bit"）
+  // subLabel: 路径
+  const version = java.major_version;
+  const arch = java.is_64bit ? i18n.t("common.java_64bit") : i18n.t("common.java_32bit");
+
+  // 简化 vendor 名称
+  let vendor = java.vendor;
+  if (vendor.includes("Oracle") || vendor.includes("Sun")) {
+    vendor = "Oracle";
+  } else if (vendor.includes("Temurin") || vendor.includes("Adopt")) {
+    vendor = "Eclipse Temurin";
+  } else if (vendor.includes("Amazon")) {
+    vendor = "Amazon Corretto";
+  } else if (vendor.includes("Microsoft")) {
+    vendor = "Microsoft";
+  } else if (vendor.includes("Zulu") || vendor.includes("Azul")) {
+    vendor = "Azul Zulu";
+  } else if (vendor.includes("Liberica") || vendor.includes("BellSoft")) {
+    vendor = "Liberica";
+  }
+
+  return {
+    label: `Java ${version} ${vendor} ${arch}`,
+    subLabel: java.path,
+  };
 }
 
 const javaOptions = computed(() => {
-  return javaList.value.map((java) => ({
-    label: getJavaLabel(java),
-    value: java.path,
-  }));
+  return javaList.value.map((java) => {
+    const labelInfo = getJavaLabel(java);
+    return {
+      label: labelInfo.label,
+      subLabel: labelInfo.subLabel,
+      value: java.path,
+    };
+  });
+});
+
+const startupModes: StartupMode[] = ["jar", "bat", "sh"];
+
+const startupFileLabel = computed(() => {
+  if (startupMode.value === "bat") {
+    return i18n.t("create.bat_file");
+  }
+  if (startupMode.value === "sh") {
+    return i18n.t("create.sh_file");
+  }
+  return i18n.t("create.jar_file");
 });
 </script>
 
@@ -162,17 +247,19 @@ const javaOptions = computed(() => {
     <SLCard :title="i18n.t('create.java_env')" :subtitle="i18n.t('create.java_scan')">
       <div v-if="javaLoading" class="java-loading">
         <div class="spinner"></div>
-        <span>{{ i18n.t('create.scanning') }}</span>
+        <span>{{ i18n.t("create.scanning") }}</span>
       </div>
       <div v-else-if="javaList.length === 0" class="java-empty">
-        <p class="text-body">{{ i18n.t('create.no_java') }}</p>
-        <SLButton variant="primary" @click="detectJava" style="margin-top: 12px;">
-          {{ i18n.t('create.browse') }}
+        <p class="text-body">{{ i18n.t("create.no_java") }}</p>
+        <SLButton variant="primary" @click="detectJava" style="margin-top: 12px">
+          {{ i18n.t("create.scan") }}
         </SLButton>
       </div>
       <div v-else class="java-select-container">
         <div class="java-header">
-          <div class="java-found text-caption">{{ i18n.t('create.java_found', { count: javaList.length }) }}</div>
+          <div class="java-found text-caption">
+            {{ i18n.t("create.java_found", { count: javaList.length }) }}
+          </div>
           <button class="rescan-btn" @click="detectJava" :disabled="javaLoading">
             <svg
               width="14"
@@ -186,7 +273,7 @@ const javaOptions = computed(() => {
                 d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"
               />
             </svg>
-            {{ i18n.t('create.rescan') }}
+            {{ i18n.t("create.rescan") }}
           </button>
         </div>
         <SLSelect
@@ -196,15 +283,15 @@ const javaOptions = computed(() => {
           searchable
           maxHeight="240px"
         />
-        <div v-if="selectedJava" class="selected-java-path">
-          <span class="text-caption">{{ i18n.t('create.server_path') }}：</span>
-          <span class="text-mono text-caption">{{ selectedJava }}</span>
-        </div>
       </div>
       <div class="java-manual">
-        <SLInput :label="i18n.t('create.java_version')" v-model="selectedJava" :placeholder="i18n.t('create.java_manual')">
+        <SLInput
+          :label="i18n.t('create.java_path')"
+          v-model="selectedJava"
+          :placeholder="i18n.t('create.java_manual')"
+        >
           <template #suffix>
-            <button class="pick-btn" @click="pickJavaFile">{{ i18n.t('create.browse') }}</button>
+            <button class="pick-btn" @click="pickJavaFile">{{ i18n.t("create.browse") }}</button>
           </template>
         </SLInput>
       </div>
@@ -213,22 +300,45 @@ const javaOptions = computed(() => {
     <SLCard :title="i18n.t('create.title')">
       <div class="form-grid">
         <div class="server-name-row">
-          <SLInput :label="i18n.t('create.server_name')" :placeholder="i18n.t('create.server_name')" v-model="serverName" />
+          <SLInput
+            :label="i18n.t('create.server_name')"
+            :placeholder="i18n.t('create.server_name')"
+            v-model="serverName"
+          />
         </div>
-        <div class="jar-picker">
-          <SLInput :label="i18n.t('create.jar_file')" v-model="jarPath" :placeholder="i18n.t('create.jar_file')">
-            <template #suffix>
-              <button class="pick-btn" @click="pickJarFile">{{ i18n.t('create.browse') }}</button>
-            </template>
-          </SLInput>
+        <div class="startup-mode-row">
+          <span class="startup-mode-label">{{ i18n.t("create.startup_mode") }}</span>
+          <div class="startup-mode-control">
+            <div class="startup-mode-tabs">
+              <div class="startup-mode-indicator" ref="startupModeIndicator"></div>
+              <button
+                v-for="mode in startupModes"
+                :key="mode"
+                type="button"
+                class="startup-mode-tab"
+                :class="{ active: startupMode === mode }"
+                @click="setStartupMode(mode)"
+              >
+                {{ mode === "jar" ? "JAR" : mode }}
+              </button>
+            </div>
+          </div>
         </div>
+
         <SLInput :label="i18n.t('create.max_memory')" type="number" v-model="maxMemory" />
         <SLInput :label="i18n.t('create.min_memory')" type="number" v-model="minMemory" />
-        <SLInput :label="i18n.t('settings.default_port')" type="number" v-model="port" :placeholder="i18n.t('create.default_port_placeholder')" />
+        <SLInput
+          :label="i18n.t('settings.default_port')"
+          type="number"
+          v-model="port"
+          :placeholder="i18n.t('create.default_port_placeholder')"
+        />
         <div class="online-mode-cell">
-          <span class="online-mode-label">{{ i18n.t('create.online_mode') }}</span>
+          <span class="online-mode-label">{{ i18n.t("create.online_mode") }}</span>
           <div class="online-mode-box">
-            <span class="online-mode-text">{{ onlineMode ? i18n.t('create.online_mode_on') : i18n.t('create.online_mode_off') }}</span>
+            <span class="online-mode-text">{{
+              onlineMode ? i18n.t("create.online_mode_on") : i18n.t("create.online_mode_off")
+            }}</span>
             <SLSwitch v-model="onlineMode" />
           </div>
         </div>
@@ -236,9 +346,11 @@ const javaOptions = computed(() => {
     </SLCard>
 
     <div class="create-actions">
-      <SLButton variant="secondary" size="lg" @click="router.push('/')">{{ i18n.t('create.cancel') }}</SLButton>
+      <SLButton variant="secondary" size="lg" @click="router.push('/')">{{
+        i18n.t("create.cancel")
+      }}</SLButton>
       <SLButton variant="primary" size="lg" :loading="creating" @click="handleCreate">
-        {{ i18n.t('create.create') }}
+        {{ i18n.t("create.select_and_create") }}
       </SLButton>
     </div>
   </div>
@@ -339,6 +451,64 @@ const javaOptions = computed(() => {
 }
 .server-name-row {
   grid-column: 1 / -1;
+}
+.startup-mode-row {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sl-space-xs);
+}
+.startup-mode-label {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--sl-text-secondary);
+}
+.startup-mode-control {
+  display: flex;
+  align-items: center;
+}
+.startup-mode-tabs {
+  display: flex;
+  gap: 2px;
+  background: var(--sl-bg-secondary);
+  border-radius: var(--sl-radius-md);
+  padding: 3px;
+  width: 100%;
+  position: relative;
+  overflow: hidden;
+}
+.startup-mode-indicator {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  background: var(--sl-primary-bg);
+  border-radius: var(--sl-radius-sm);
+  transition: all var(--sl-transition-normal);
+  box-shadow: var(--sl-shadow-sm);
+  z-index: 1;
+  border: 1px solid var(--sl-primary);
+  opacity: 0.9;
+}
+.startup-mode-tab {
+  flex: 1;
+  padding: 6px 14px;
+  border-radius: var(--sl-radius-sm);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--sl-text-secondary);
+  transition: all var(--sl-transition-fast);
+  position: relative;
+  z-index: 2;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: center;
+}
+.startup-mode-tab:hover {
+  color: var(--sl-primary);
+}
+.startup-mode-tab.active {
+  color: var(--sl-primary);
 }
 .jar-picker {
   grid-column: 1 / -1;

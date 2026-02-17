@@ -12,12 +12,13 @@
 
 </div>
 
+> 您正在浏览简体中文版的readme，点击[此处](README-en.md)前往英文版
+
+> You are browsing the Simplified Chinese version of the readme. Click [here](README-en.md) to go to the English version
 
 ![img](https://gitee.com/fps_z/markdown/raw/master/img/about2.png)
 
-
 ## 能干什么
-
 
 - 控制台实时看日志，直接输命令
 - server.properties 图形化编辑，不用手改文件
@@ -126,6 +127,12 @@ sea-lantern/
 │   │   └── splash/                   启动画面
 │   │       └── SplashScreen.vue     应用启动时的加载动画
 │   │
+│   ├── locales/                      国际化资源
+│   │   ├── index.ts                  语言文件入口
+│   │   ├── en-US.json                英文翻译
+│   │   ├── zh-CN.json                简体中文翻译
+│   │   └── zh-TW.json                繁体中文翻译
+│   │
 │   ├── views/                         页面视图（每个路由对应一个）
 │   │   ├── HomeView.vue              首页（服务器列表、系统状态）
 │   │   ├── CreateServerView.vue     创建/导入服务器页面
@@ -220,49 +227,6 @@ sea-lantern/
 └── README.md                          项目说明文档（你正在看的这个）
 ```
 
-## 已实现功能
-
-### 服务器管理
-
-- 导入 JAR 文件创建服务器，一键启动和停止
-- 数据保存到 JSON，重启软件不丢失
-
-### 实时控制台
-
-- 后端用独立线程读 stdout 和 stderr
-- 前端每 800ms 轮询拉新日志
-- 支持命令输入、Tab 补全、上下键历史、快捷指令按钮
-- 日志存在全局 store 里，切页面不丢
-
-### Java 检测
-
-- 启动时扫描 A 到 Z 所有盘符
-- 递归搜索常见安装路径，包括 .minecraft/runtime 里 MC 自带的 Java
-- 按版本号排序，标记推荐
-
-### 配置编辑
-
-- 读取 server.properties，解析成带描述和分类的结构化数据
-- 布尔值用开关，枚举用下拉，数字和字符串用输入框
-- 改完直接写回文件
-
-### 玩家管理
-
-- 读取 whitelist.json / banned-players.json / ops.json 显示列表
-- 添加和移除通过向运行中的服务器发送 MC 命令实现
-- 解析日志判断在线玩家
-
-### 应用设置
-
-- 关闭软件时自动停止所有服务器（默认开启）
-- 自动同意 EULA
-- 默认内存、端口、JVM 参数，全部可配
-
-### 软件更新
-- 检查来自 Gitee（或Github）  的发行版，获取最新版本信息
-- 显示更新日志，一键打开下载链接
-- 版本号自动比较，提示用户更新
-
 ## 待开发功能
 
 这些功能的位置都预留好了，代码骨架是现成的，等你来写：
@@ -272,8 +236,6 @@ sea-lantern/
 - 内网穿透 - 集成 FRP
 - 定时任务 - 自动重启、定时备份、定时执行命令
 - 资源管理 - 从 Modrinth / CurseForge 搜索安装插件和 Mod
-- 暗色主题 - CSS 变量都准备好了，加一套 dark 的值就行
-- 国际化 - 目前全是中文硬编码，可以抽成语言文件
 
 ## 交流群
 
@@ -314,6 +276,10 @@ QQ 交流群：**293748695**，欢迎加入讨论！
 4. `AppSidebar.vue` 的 `navItems` 数组里加一项
 
 前后端各三个文件，路由和侧栏各改一行。
+
+### i18n 国际化支持指南
+
+Sea Lantern 支持多语言国际化，包括简体中文、繁体中文和英文。如果你需要添加新的翻译或语言支持，请参考 [i18n 国际化指南](i18n.md)。
 
 ## License
 

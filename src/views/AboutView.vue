@@ -1,31 +1,30 @@
+﻿﻿
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import SLCard from "../components/common/SLCard.vue";
 import SLButton from "../components/common/SLButton.vue";
-import SLModal from "../components/common/SLModal.vue";
 import SLNotification from "../components/common/SLNotification.vue";
 import { contributors as contributorsList } from "../data/contributors";
-import { checkUpdate, type UpdateInfo } from "../api/update";
+import { useUpdateStore } from "../stores/updateStore";
 import { getAppVersion, BUILD_YEAR } from "../utils/version";
 import { i18n } from "../locales";
+import { onDownloadProgress } from "../api/update";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 
-const version = ref("加载中...");
+const version = ref(i18n.t("common.loading"));
 const buildDate = BUILD_YEAR;
 
 const contributors = ref(contributorsList);
 
-const updateInfo = ref<UpdateInfo | null>(null);
-const updateError = ref<string | null>(null);
-const updateStatus = ref<"idle" | "checking" | "latest" | "available" | "error">("idle");
-let resetTimer: ReturnType<typeof setTimeout> | null = null;
-
-const showUpdateModal = ref(false);
-const modalUpdateInfo = ref<UpdateInfo | null>(null);
+const updateStore = useUpdateStore();
 
 const showNotification = ref(false);
 const notificationMessage = ref("");
 const notificationType = ref<"success" | "error" | "warning" | "info">("info");
+
+let unlistenProgress: UnlistenFn | null = null;
+let resetTimer: ReturnType<typeof setTimeout> | null = null;
 
 function showNotify(msg: string, type: "success" | "error" | "warning" | "info" = "info") {
   notificationMessage.value = msg;
@@ -39,6 +38,10 @@ function closeNotification() {
 
 onMounted(async () => {
   version.value = await getAppVersion();
+
+  unlistenProgress = await onDownloadProgress((progress) => {
+    updateStore.setDownloading(progress.percent);
+  });
 });
 
 onUnmounted(() => {
@@ -46,34 +49,56 @@ onUnmounted(() => {
     clearTimeout(resetTimer);
     resetTimer = null;
   }
+  if (unlistenProgress) {
+    unlistenProgress();
+  }
 });
 
-function closeUpdateModal() {
-  showUpdateModal.value = false;
-  modalUpdateInfo.value = null;
-}
-
-function getButtonVariant(): "primary" | "secondary" | "danger" | "success" {
-  switch (updateStatus.value) {
+const buttonState = computed(() => {
+  switch (updateStore.status) {
     case "checking":
-      return "secondary";
+      return {
+        text: i18n.t("about.update_checking"),
+        variant: "secondary" as const,
+        disabled: true,
+      };
     case "latest":
-      return "success";
+      return { text: i18n.t("about.update_latest"), variant: "success" as const, disabled: true };
     case "available":
-      return "primary";
+      return {
+        text: i18n.t("about.update_available"),
+        variant: "primary" as const,
+        disabled: false,
+      };
+    case "downloading":
+      return {
+        text: `${i18n.t("about.update_downloading")} ${progressPercent.value}%`,
+        variant: "secondary" as const,
+        disabled: false,
+      };
+    case "installing":
+      return {
+        text: i18n.t("about.update_installing"),
+        variant: "secondary" as const,
+        disabled: false,
+      };
+    case "downloaded":
+      return { text: i18n.t("about.update_ready"), variant: "success" as const, disabled: false };
     case "error":
-      return "danger";
+      return { text: i18n.t("about.update_error"), variant: "danger" as const, disabled: false };
     default:
-      return "secondary";
+      return { text: i18n.t("about.check_update"), variant: "secondary" as const, disabled: false };
   }
-}
+});
+
+const progressPercent = computed(() => Math.round(updateStore.downloadProgress));
 
 async function openLink(url: string) {
   if (!url) return;
   try {
     await openUrl(url);
   } catch (e) {
-    alert(`无法打开链接: ${e}`);
+    alert(`${i18n.t("about.open_link_failed")}: ${String(e)}`);
   }
 }
 
@@ -83,58 +108,19 @@ async function handleCheckUpdate() {
     resetTimer = null;
   }
 
-  updateStatus.value = "checking";
-  updateError.value = null;
-  updateInfo.value = null;
-
   try {
-    const info = await checkUpdate();
-
-    if (info && info.has_update) {
-      updateInfo.value = info;
-      updateStatus.value = "available";
-      modalUpdateInfo.value = info;
-      showUpdateModal.value = true;
-      if (info.source === "github") {
-        showNotify("Gitee 不可用，已切换到 GitHub", "warning");
-      }
-    } else {
-      updateInfo.value = {
-        has_update: false,
-        latest_version: version.value,
-        current_version: version.value,
-      };
-      updateStatus.value = "latest";
-
-      if (info?.source === "github") {
-        showNotify("Gitee 不可用，已切换到 GitHub", "warning");
-      }
-
-      resetTimer = setTimeout(() => {
-        updateStatus.value = "idle";
-        updateInfo.value = null;
-        resetTimer = null;
-      }, 3000);
-    }
+    await updateStore.checkForUpdate();
   } catch (error) {
-    showNotify("检查更新失败: " + (error as string), "error");
-    updateStatus.value = "error";
-
-    resetTimer = setTimeout(() => {
-      updateStatus.value = "idle";
-      resetTimer = null;
-    }, 3000);
+    showNotify(`${i18n.t("about.update_check_failed")}: ${String(error)}`, "error");
   }
 }
 
-async function handleManualDownload() {
-  if (updateInfo.value?.download_url) {
-    try {
-      await openUrl(updateInfo.value.download_url);
-    } catch (error) {
-      alert(`打开链接失败: ${error}`);
-    }
+async function handlePrimaryUpdateAction() {
+  if (updateStore.hasStartedUpdateFlow && updateStore.isUpdateAvailable) {
+    updateStore.showUpdateModal();
+    return;
   }
+  await handleCheckUpdate();
 }
 </script>
 
@@ -146,44 +132,51 @@ async function handleManualDownload() {
         <div class="hero-logo">
           <img src="../assets/logo.svg" :alt="i18n.t('common.app_name')" width="72" height="72" />
         </div>
-        <h1 class="hero-title">{{ i18n.t('common.app_name') }}</h1>
-        <p class="hero-subtitle">{{ i18n.t('about.subtitle') }}</p>
+        <h1 class="hero-title">{{ i18n.t("common.app_name") }}</h1>
+        <p class="hero-subtitle">{{ i18n.t("about.subtitle") }}</p>
         <div class="hero-badges">
           <span class="version-badge">v{{ version }}</span>
-          <span class="tech-badge">{{ i18n.t('about.tech_badge') }}</span>
-          <span class="license-badge">{{ i18n.t('about.license_badge') }}</span>
+          <span class="tech-badge">{{ i18n.t("about.tech_badge") }}</span>
+          <span class="license-badge">{{ i18n.t("about.license_badge") }}</span>
         </div>
         <p class="hero-desc">
-          {{ i18n.t('about.hero_desc') }}
+          {{ i18n.t("about.hero_desc") }}
         </p>
       </div>
 
       <!-- Manifesto -->
       <SLCard>
         <div class="manifesto">
-          <h3 class="manifesto-title">{{ i18n.t('about.manifesto_title') }}</h3>
+          <h3 class="manifesto-title">{{ i18n.t("about.manifesto_title") }}</h3>
           <p class="manifesto-text">
-            {{ i18n.t('about.manifesto_text1') }}
+            {{ i18n.t("about.manifesto_text1") }}
           </p>
           <p class="manifesto-text">
-            {{ i18n.t('about.manifesto_text2') }}
+            {{ i18n.t("about.manifesto_text2") }}
           </p>
         </div>
       </SLCard>
 
-      <!-- 此处缺一段代码 -->
-      <!-- 点击加入开发 -->
-
       <!-- Contributor Wall -->
       <div class="contributor-section">
         <div class="section-header">
-          <h2 class="section-title">{{ i18n.t('about.contributor_wall') }}</h2>
-          <p class="section-desc">{{ i18n.t('about.contributor_desc') }}</p>
+          <h2 class="section-title">{{ i18n.t("about.contributor_wall") }}</h2>
+          <p class="section-desc">{{ i18n.t("about.contributor_desc") }}</p>
         </div>
 
         <div class="contributor-grid">
           <div v-for="c in contributors" :key="c.name" class="contributor-card glass-card">
-            <img :src="c.avatar" :alt="c.name" class="contributor-avatar" />
+            <a
+              v-if="c.url"
+              :href="c.url"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="contributor-link"
+            >
+              <img :src="c.avatar" :alt="c.name" class="contributor-avatar" />
+            </a>
+            <img v-else :src="c.avatar" :alt="c.name" class="contributor-avatar" />
+
             <div class="contributor-info">
               <span class="contributor-name">{{ c.name }}</span>
               <span class="contributor-role">{{ c.role }}</span>
@@ -206,8 +199,8 @@ async function handleManualDownload() {
               </svg>
             </div>
             <div class="contributor-info">
-              <span class="contributor-name join-text">{{ i18n.t('about.join_text') }}</span>
-              <span class="contributor-role">{{ i18n.t('about.join_desc') }}</span>
+              <span class="contributor-name join-text">{{ i18n.t("about.join_text") }}</span>
+              <span class="contributor-role">{{ i18n.t("about.join_desc") }}</span>
             </div>
           </div>
         </div>
@@ -218,106 +211,44 @@ async function handleManualDownload() {
         <SLCard :title="i18n.t('about.project_info')">
           <div class="info-list">
             <div class="info-item">
-              <span class="info-label">{{ i18n.t('about.version') }}</span>
+              <span class="info-label">{{ i18n.t("about.version") }}</span>
               <span class="info-value">{{ version }}</span>
             </div>
             <div class="info-item">
-              <span class="info-label">{{ i18n.t('about.build_year') }}</span>
+              <span class="info-label">{{ i18n.t("about.build_year") }}</span>
               <span class="info-value">{{ buildDate }}</span>
             </div>
             <div class="info-item">
-              <span class="info-label">{{ i18n.t('about.frontend') }}</span>
+              <span class="info-label">{{ i18n.t("about.frontend") }}</span>
               <span class="info-value">Vue 3 + TypeScript + Vite</span>
             </div>
             <div class="info-item">
-              <span class="info-label">{{ i18n.t('about.backend') }}</span>
+              <span class="info-label">{{ i18n.t("about.backend") }}</span>
               <span class="info-value">Rust + Tauri 2</span>
             </div>
             <div class="info-item">
-              <span class="info-label">{{ i18n.t('about.license') }}</span>
+              <span class="info-label">{{ i18n.t("about.license") }}</span>
               <span class="info-value">GNU GPLv3</span>
             </div>
           </div>
 
-          <!-- 检查更新按钮 -->
+          <!-- Update action button -->
           <div class="update-section">
             <SLButton
-              :variant="getButtonVariant()"
+              class="update-action-btn"
+              :variant="buttonState.variant"
               size="sm"
-              @click="handleCheckUpdate"
-              :disabled="updateStatus === 'checking'"
+              @click="handlePrimaryUpdateAction"
+              :disabled="buttonState.disabled"
               style="width: 100%"
             >
-              <span class="btn-content">
-                <svg
-                  v-if="updateStatus === 'checking'"
-                  class="animate-spin"
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2.5"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  style="margin-right: 6px"
-                >
-                  <path
-                    d="M12 2v4m0 12v4m10-10h-4M6 12H2m15.07-5.07l-2.83 2.83M9.76 14.24l-2.83 2.83m11.14 0l-2.83-2.83M9.76 9.76L6.93 6.93"
-                  />
-                </svg>
-                <svg
-                  v-else-if="updateStatus === 'latest'"
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2.5"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  style="margin-right: 6px"
-                >
-                  <polyline points="20 6 9 17 4 12"></polyline>
-                </svg>
-                <svg
-                  v-else-if="updateStatus === 'available'"
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2.5"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  style="margin-right: 6px"
-                >
-                  <polyline points="17 1 21 5 17 9"></polyline>
-                  <path d="M3 11V9a4 4 0 0 1 4-4h14"></path>
-                  <polyline points="7 23 3 19 7 15"></polyline>
-                  <path d="M21 13v2a4 4 0 0 1-4 4H3"></path>
-                </svg>
-                <svg
-                  v-else-if="updateStatus === 'error'"
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2.5"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  style="margin-right: 6px"
-                >
-                  <circle cx="12" cy="12" r="10"></circle>
-                  <line x1="12" y1="8" x2="12" y2="12"></line>
-                  <line x1="12" y1="16" x2="12.01" y2="16"></line>
-                </svg>
-                <span v-if="updateStatus === 'checking'">{{ i18n.t('about.update_checking') }}</span>
-                <span v-else-if="updateStatus === 'latest'">{{ i18n.t('about.update_latest') }}</span>
-                <span v-else-if="updateStatus === 'available'">{{ i18n.t('about.update_available') }}</span>
-                <span v-else-if="updateStatus === 'error'">{{ i18n.t('about.update_error') }}</span>
-                <span v-else>{{ i18n.t('about.check_update') }}</span>
+              <span class="update-btn-content">
+                <span
+                  v-if="updateStore.status === 'downloading'"
+                  class="update-btn-progress"
+                  :style="{ width: `${progressPercent}%` }"
+                />
+                <span class="update-btn-label">{{ buttonState.text }}</span>
               </span>
             </SLButton>
           </div>
@@ -342,8 +273,8 @@ async function handleManualDownload() {
                 </svg>
               </div>
               <div class="way-info">
-                <span class="way-title">{{ i18n.t('about.way_code') }}</span>
-                <span class="way-desc">{{ i18n.t('about.way_code_desc') }}</span>
+                <span class="way-title">{{ i18n.t("about.way_code") }}</span>
+                <span class="way-desc">{{ i18n.t("about.way_code_desc") }}</span>
               </div>
             </div>
             <div class="way-item">
@@ -362,8 +293,8 @@ async function handleManualDownload() {
                 </svg>
               </div>
               <div class="way-info">
-                <span class="way-title">{{ i18n.t('about.way_design') }}</span>
-                <span class="way-desc">{{ i18n.t('about.way_design_desc') }}</span>
+                <span class="way-title">{{ i18n.t("about.way_design") }}</span>
+                <span class="way-desc">{{ i18n.t("about.way_design_desc") }}</span>
               </div>
             </div>
             <div class="way-item">
@@ -384,8 +315,8 @@ async function handleManualDownload() {
                 </svg>
               </div>
               <div class="way-info">
-                <span class="way-title">{{ i18n.t('about.way_idea') }}</span>
-                <span class="way-desc">{{ i18n.t('about.way_idea_desc') }}</span>
+                <span class="way-title">{{ i18n.t("about.way_idea") }}</span>
+                <span class="way-desc">{{ i18n.t("about.way_idea_desc") }}</span>
               </div>
             </div>
             <div class="way-item">
@@ -405,8 +336,8 @@ async function handleManualDownload() {
                 </svg>
               </div>
               <div class="way-info">
-                <span class="way-title">{{ i18n.t('about.way_doc') }}</span>
-                <span class="way-desc">{{ i18n.t('about.way_doc_desc') }}</span>
+                <span class="way-title">{{ i18n.t("about.way_doc") }}</span>
+                <span class="way-desc">{{ i18n.t("about.way_doc_desc") }}</span>
               </div>
             </div>
             <div class="way-item">
@@ -429,8 +360,8 @@ async function handleManualDownload() {
                 </svg>
               </div>
               <div class="way-info">
-                <span class="way-title">{{ i18n.t('about.way_translate') }}</span>
-                <span class="way-desc">{{ i18n.t('about.way_translate_desc') }}</span>
+                <span class="way-title">{{ i18n.t("about.way_translate") }}</span>
+                <span class="way-desc">{{ i18n.t("about.way_translate_desc") }}</span>
               </div>
             </div>
             <div class="way-item">
@@ -451,8 +382,8 @@ async function handleManualDownload() {
                 </svg>
               </div>
               <div class="way-info">
-                <span class="way-title">{{ i18n.t('about.way_promote') }}</span>
-                <span class="way-desc">{{ i18n.t('about.way_promote_desc') }}</span>
+                <span class="way-title">{{ i18n.t("about.way_promote") }}</span>
+                <span class="way-desc">{{ i18n.t("about.way_promote_desc") }}</span>
               </div>
             </div>
           </div>
@@ -461,56 +392,37 @@ async function handleManualDownload() {
 
       <!-- Links -->
       <div class="links-section">
-        <SLButton variant="primary" size="lg" @click="openLink('https://gitee.com/fps_z/SeaLantern')">
-          {{ i18n.t('about.gitee_repo') }}
+        <SLButton
+          variant="primary"
+          size="lg"
+          @click="openLink('https://github.com/FPSZ/SeaLantern')"
+        >
+          {{ i18n.t("about.github_repo") }}
         </SLButton>
-        <SLButton variant="secondary" size="lg" @click="openLink('https://space.bilibili.com/3706927622130406?spm_id_from=333.1387.0.0')">
-          {{ i18n.t('about.bilibili') }}
+        <SLButton
+          variant="secondary"
+          size="lg"
+          @click="openLink('https://space.bilibili.com/3706927622130406?spm_id_from=333.1387.0.0')"
+        >
+          {{ i18n.t("about.bilibili") }}
         </SLButton>
       </div>
 
       <!-- Footer -->
       <div class="about-footer">
         <p class="footer-text">
-          {{ i18n.t('about.footer_text1') }}
+          {{ i18n.t("about.footer_text1") }}
         </p>
         <p class="footer-text">
-          {{ i18n.t('about.footer_text2') }}
+          {{ i18n.t("about.footer_text2") }}
         </p>
         <p class="footer-quote">
-          {{ i18n.t('about.footer_quote') }}
+          {{ i18n.t("about.footer_quote") }}
         </p>
       </div>
     </div>
 
-    <!-- 更新日志弹窗 -->
-    <SLModal
-      :visible="showUpdateModal"
-      :title="modalUpdateInfo ? `${i18n.t('about.update_title')} v${modalUpdateInfo.latest_version}` : i18n.t('about.update_title')"
-      @close="closeUpdateModal"
-    >
-      <div v-if="modalUpdateInfo" class="modal-update-content">
-        <div class="modal-update-header">
-          <div class="modal-current-version">{{ i18n.t('about.update_current') }}: v{{ modalUpdateInfo.current_version }}</div>
-        </div>
-        <div v-if="modalUpdateInfo.release_notes" class="modal-release-notes">
-          <div class="modal-notes-title">{{ i18n.t('about.update_release_notes') }}:</div>
-          <div class="modal-notes-content">{{ modalUpdateInfo.release_notes }}</div>
-        </div>
-        <div class="modal-update-actions">
-          <SLButton
-            variant="primary"
-            size="md"
-            @click="handleManualDownload"
-            style="width: 100%"
-          >
-            {{ i18n.t('about.update_now') }}
-          </SLButton>
-        </div>
-      </div>
-    </SLModal>
-
-    <!-- 通知组件 -->
+    <!-- 閫氱煡缁勪欢 -->
     <SLNotification
       :visible="showNotification"
       :message="notificationMessage"
@@ -852,71 +764,40 @@ async function handleManualDownload() {
 .update-section .sl-button {
   flex-shrink: 0;
   transition: all 0.2s ease;
-  min-width: 140px;
+  width: 100%;
   height: 32px;
 }
 
-.btn-content {
-  display: inline-flex;
+.update-btn-content {
+  position: static;
+  width: 100%;
+  height: 100%;
+  display: flex;
   align-items: center;
   justify-content: center;
-  min-width: 120px;
+}
+
+.update-btn-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.2);
+  transition: width 0.2s ease;
+  border-radius: inherit;
+  z-index: 0;
+}
+
+.update-btn-label {
+  position: relative;
+  z-index: 1;
   white-space: nowrap;
 }
 
-.btn-fade-enter-active,
-.btn-fade-leave-active {
-  transition: all 0.2s ease;
-}
-
-.btn-fade-enter-from {
-  opacity: 0;
-  transform: translateX(-8px);
-}
-
-.btn-fade-leave-to {
-  opacity: 0;
-  transform: translateX(8px);
-}
-
-/* 弹窗内容样式 */
-.modal-update-content {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sl-space-md);
-}
-
-.modal-update-header {
-  padding-bottom: var(--sl-space-sm);
-  border-bottom: 1px solid var(--sl-border-light);
-}
-
-.modal-current-version {
-  font-size: 0.875rem;
-  color: var(--sl-text-tertiary);
-}
-
-.modal-release-notes {
-  max-height: 300px;
-  overflow-y: auto;
-}
-
-.modal-notes-title {
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: var(--sl-text-primary);
-  margin-bottom: var(--sl-space-xs);
-}
-
-.modal-notes-content {
-  font-size: 0.875rem;
-  color: var(--sl-text-secondary);
-  line-height: 1.6;
-  white-space: pre-wrap;
-}
-
-.modal-update-actions {
-  padding-top: var(--sl-space-sm);
+:deep(.update-action-btn) {
+  position: relative;
+  overflow: hidden;
 }
 
 @media (max-width: 768px) {
