@@ -16,7 +16,7 @@ pub async fn validate_java_path(path: String) -> Result<java_detector::JavaInfo,
 
 #[tauri::command]
 pub async fn install_java<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
+    _app: tauri::AppHandle<R>,
     window: tauri::Window<R>,
     url: String,
     version_name: String,

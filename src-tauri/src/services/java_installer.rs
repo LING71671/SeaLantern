@@ -1,7 +1,7 @@
 use std::fs;
 use std::io::Cursor;
-use std::path::{Path, PathBuf};
-use tauri::{Emitter, Window};
+use std::path::Path;
+use tauri::{Emitter, Manager, Window};
 use zip::ZipArchive;
 #[cfg(not(target_os = "windows"))]
 use flate2::read::GzDecoder;
@@ -133,7 +133,7 @@ pub async fn download_and_install_java<R: tauri::Runtime>(
 
     // 3. Move Logic
     // Find the single inner directory if it exists
-    let install_source = if let Ok(mut entries) = fs::read_dir(&temp_dir) {
+    let install_source = if let Ok(entries) = fs::read_dir(&temp_dir) {
         let entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
         if entries.len() == 1 && entries[0].path().is_dir() {
             entries[0].path()
