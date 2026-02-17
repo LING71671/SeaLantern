@@ -16,4 +16,9 @@ export const javaApi = {
   async validate(path: string): Promise<JavaInfo> {
     return tauriInvoke("validate_java_path", { path });
   },
+
+  async installJava(url: string, versionName: string): Promise<string> {
+    return tauriInvoke("install_java", { url, versionName });
+  },
 };
+

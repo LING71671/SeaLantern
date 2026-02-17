@@ -84,6 +84,7 @@ pub fn run() {
             server_commands::update_server_name,
             java_commands::detect_java,
             java_commands::validate_java_path,
+            java_commands::install_java,
             config_commands::read_config,
             config_commands::write_config,
             config_commands::read_server_properties,
