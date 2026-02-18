@@ -17,8 +17,6 @@ changelogs/
 .trae/
 changelog/
 
-.agent/
-
 # 临时不上传
 plugins/
 plugin-market/
