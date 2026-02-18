@@ -1930,10 +1930,7 @@ function clearBackgroundImage() {
               <span class="setting-label">{{ i18n.t("settings.senior_mode") }}</span>
               <span class="setting-desc">{{ i18n.t("settings.senior_mode_desc") }}</span>
             </div>
-            <SLSwitch
-              v-model="settings.senior_mode"
-              @update:modelValue="handleSeniorModeChange"
-            />
+            <SLSwitch v-model="settings.senior_mode" @update:modelValue="handleSeniorModeChange" />
           </div>
 
           <div class="setting-row">
