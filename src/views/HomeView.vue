@@ -9,7 +9,14 @@ import { useServerStore } from "../stores/serverStore";
 import { useConsoleStore } from "../stores/consoleStore";
 import { serverApi } from "../api/server";
 import { systemApi, type SystemInfo } from "../api/system";
-import { i18n } from "../locales";
+import { i18n } from "../language";
+import type { ServerInstance } from "../types/server";
+import {
+  Gauge,
+  BarChart3,
+  Server,
+  FolderOpen,
+} from "lucide-vue-next";
 
 const router = useRouter();
 const store = useServerStore();
@@ -96,19 +103,13 @@ function typeWriterOut(callback?: () => void) {
  * 从一言 API 获取名言
  */
 async function fetchHitokoto(): Promise<{ text: string; author: string }> {
-  console.log("获取一言，当前缓存数量:", quoteCache.value.length);
-  // 优先从缓存中获取
   if (quoteCache.value.length > 0) {
     const quote = quoteCache.value.shift();
-    console.log("从缓存中获取一言:", quote);
-    console.log("缓存剩余数量:", quoteCache.value.length);
-    // 异步补充缓存
     replenishCache();
     return quote!;
   }
 
   try {
-    console.log("缓存为空，从API获取一言");
     const response = await fetch("https://v1.hitokoto.cn/?encode=json");
     if (!response.ok) {
       throw new Error("Failed to fetch hitokoto");
@@ -118,15 +119,12 @@ async function fetchHitokoto(): Promise<{ text: string; author: string }> {
       text: data.hitokoto,
       author: data.from_who || data.from || i18n.t("common.unknown"),
     };
-    console.log("从API获取一言成功:", quote);
-    // 补充缓存
     replenishCache();
     return quote;
   } catch (error) {
     console.error("Error fetching hitokoto:", error);
     // 失败时返回默认名言
     const defaultQuote = { text: i18n.t("common.quote_text"), author: "Sea Lantern" };
-    console.log("使用默认一言:", defaultQuote);
     return defaultQuote;
   }
 }
@@ -142,7 +140,6 @@ function isQuoteInCache(quote: { text: string; author: string }): boolean {
  * 补充一言缓存，确保缓存中有至少2个一言，且不重复
  */
 async function replenishCache() {
-  console.log("开始补充缓存，当前缓存数量:", quoteCache.value.length);
   let attempts = 0;
   const maxAttempts = 10;
 
@@ -161,10 +158,7 @@ async function replenishCache() {
       // 检查是否已在缓存中
       if (!isQuoteInCache(newQuote)) {
         quoteCache.value.push(newQuote);
-        console.log("补充缓存成功，当前缓存数量:", quoteCache.value.length);
-        console.log("新缓存的一言:", newQuote);
       } else {
-        console.log("一言已在缓存中，跳过:", newQuote.text.substring(0, 20) + "...");
         attempts++;
       }
     } catch (error) {
@@ -172,30 +166,20 @@ async function replenishCache() {
       break;
     }
   }
-
-  if (attempts >= maxAttempts) {
-    console.log("达到最大尝试次数，停止补充缓存");
-  }
 }
 
 /**
  * 更新名言
  */
 async function updateQuote() {
-  console.log("触发更新一言");
   if (isTyping.value) {
-    console.log("正在打字中，取消更新");
     return;
   }
   // 先打字消失
   typeWriterOut(async () => {
     try {
-      console.log("开始获取新一言");
       const newQuote = await fetchHitokoto();
-      console.log("获取新一言成功:", newQuote);
       currentQuote.value = newQuote;
-      // 再打字出现
-      console.log("开始打字显示新一言");
       typeWriter(newQuote.text);
     } catch (error) {
       console.error("Error updating quote:", error);
@@ -221,7 +205,6 @@ initQuote();
 
 let quoteTimer: ReturnType<typeof setInterval> | null = null;
 
-// 格式化字节
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
   const k = 1024;
@@ -230,13 +213,11 @@ function formatBytes(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
 }
 
-// 格式化服务器路径，只显示 servers 目录及其后面的内容
 function formatServerPath(path: string): string {
   const serversIndex = path.indexOf("servers/");
   if (serversIndex !== -1) {
     return path.substring(serversIndex);
   }
-  // 尝试使用反斜杠查找
   const serversIndexBackslash = path.indexOf("servers\\");
   if (serversIndexBackslash !== -1) {
     return path.substring(serversIndexBackslash);
@@ -244,7 +225,6 @@ function formatServerPath(path: string): string {
   return path;
 }
 
-// Recent warning/error logs across all servers
 const recentAlerts = computed(() => {
   const alerts: { server: string; line: string }[] = [];
   for (const [sid, logs] of Object.entries(consoleStore.logs)) {
@@ -304,7 +284,7 @@ onMounted(() => {
   fetchSystemInfo();
 
   // 设置定时任务
-  statsTimer = setInterval(fetchSystemInfo, 1000);
+  statsTimer = setInterval(fetchSystemInfo, 3000);
 
   // 名言每30秒更新一次
   quoteTimer = setInterval(updateQuote, 30000);
@@ -321,6 +301,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  if (typeTimer) clearInterval(typeTimer);
   if (statsTimer) clearInterval(statsTimer);
   if (refreshTimer) clearInterval(refreshTimer);
   if (quoteTimer) clearInterval(quoteTimer);
@@ -399,7 +380,7 @@ async function handleStop(id: string) {
 }
 
 // 开始就地编辑服务器名称
-function startEditServerName(server: any) {
+function startEditServerName(server: ServerInstance) {
   editingServerId.value = server.id;
   editName.value = server.name;
 }
@@ -436,7 +417,7 @@ const deleteError = ref<string | null>(null);
 const isClosing = ref(false);
 
 // 显示/收回删除确认输入框
-function showDeleteConfirmInput(server: any) {
+function showDeleteConfirmInput(server: ServerInstance) {
   // 如果当前服务器的删除确认输入框已显示，则收回
   if (deletingServerId.value === server.id) {
     cancelDelete();
@@ -548,29 +529,8 @@ function handleAnimationEnd(event: AnimationEvent) {
                 statsViewMode === 'gauge' ? i18n.t('home.detail_view') : i18n.t('home.gauge_view')
               "
             >
-              <svg
-                v-if="statsViewMode === 'gauge'"
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-              >
-                <path d="M4 6h16M4 12h16M4 18h16" />
-              </svg>
-              <svg
-                v-else
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-              >
-                <circle cx="12" cy="12" r="10" />
-                <path d="M12 6v6l4 2" />
-              </svg>
+              <BarChart3 v-if="statsViewMode === 'gauge'" :size="14" />
+              <Gauge v-else :size="14" />
             </button>
           </div>
         </template>
@@ -812,17 +772,7 @@ function handleAnimationEnd(event: AnimationEvent) {
     </div>
 
     <div v-else-if="store.servers.length === 0" class="empty-state">
-      <svg
-        width="64"
-        height="64"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="var(--sl-text-tertiary)"
-        stroke-width="1"
-        stroke-linecap="round"
-      >
-        <path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
-      </svg>
+      <Server :size="64" :stroke-width="1" class="empty-icon" />
       <p class="text-body">{{ i18n.t("home.no_servers") }}</p>
       <p class="text-caption">{{ i18n.t("home.create_first") }}</p>
     </div>
@@ -929,21 +879,7 @@ function handleAnimationEnd(event: AnimationEvent) {
           @click="systemApi.openFolder(server.path)"
         >
           <span class="server-path-text">{{ formatServerPath(server.jar_path) }}</span>
-          <svg
-            class="folder-icon"
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          >
-            <path
-              d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"
-            />
-          </svg>
+          <FolderOpen class="folder-icon" :size="16" />
         </div>
 
         <div class="server-card-actions">
@@ -992,7 +928,6 @@ function handleAnimationEnd(event: AnimationEvent) {
           <SLButton variant="ghost" size="sm" @click="showDeleteConfirmInput(server)">
             {{ i18n.t("home.delete") }}
           </SLButton>
-          <!-- 删除确认输入框 -->
           <div
             v-if="deletingServerId === server.id"
             :class="['delete-confirm-input', { closing: isClosing }]"
@@ -1541,7 +1476,6 @@ function handleAnimationEnd(event: AnimationEvent) {
   }
 }
 
-/* 删除确认输入框样式 */
 .delete-confirm-input {
   width: 100%;
   margin-top: var(--sl-space-sm);
@@ -1640,7 +1574,6 @@ function handleAnimationEnd(event: AnimationEvent) {
   margin-top: var(--sl-space-sm);
 }
 
-/* Alerts */
 .alerts-section {
   margin-top: var(--sl-space-sm);
 }

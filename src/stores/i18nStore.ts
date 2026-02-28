@@ -1,23 +1,22 @@
-import { computed, onMounted } from "vue";
+import { computed, onMounted, reactive } from "vue";
 import { defineStore } from "pinia";
-import { i18n, type LocaleCode, setTranslations } from "../locales";
+import { i18n, type LocaleCode, setTranslations } from "../language";
 import { settingsApi } from "../api/settings";
-import { fetchLocale } from "../api/remoteLocales";
+import { fetchLocale, fetchByUrl } from "../api/remoteLocales";
+import { REMOTE_LOCALES_MAP } from "./i18nRemote";
+import { onLocaleChanged } from "../api/plugin";
 
 const LOCALE_LABEL_KEYS: Record<string, string> = {
   "zh-CN": "header.chinese",
   "en-US": "header.english",
   "zh-TW": "header.chinese_tw",
   "de-DE": "header.deutsch",
-  "en-AU": "header.aussie",
   "es-ES": "header.spanish",
   "ja-JP": "header.japanese",
   "ru-RU": "header.russian",
   "vi-VN": "header.vietnamese",
   "ko-KR": "header.korean",
   "fr-FA": "header.french",
-  "fr-CA": "header.french_ca",
-  "es-AR": "header.spanish_ar"
 };
 
 export const useI18nStore = defineStore("i18n", () => {
@@ -37,8 +36,6 @@ export const useI18nStore = defineStore("i18n", () => {
     })),
   );
 
-
-
   async function setLocale(nextLocale: string) {
     if (i18n.isSupportedLocale(nextLocale)) {
       i18n.setLocale(nextLocale);
@@ -48,6 +45,11 @@ export const useI18nStore = defineStore("i18n", () => {
         await settingsApi.save(settings);
       } catch (error) {
         console.error("Failed to save language setting:", error);
+      }
+      try {
+        await onLocaleChanged(nextLocale);
+      } catch (error) {
+        console.error("Failed to notify backend about locale change:", error);
       }
     }
   }
@@ -81,9 +83,7 @@ export const useI18nStore = defineStore("i18n", () => {
     }
   }
 
-  onMounted(() => {
-    loadLanguageSetting();
-  });
+  loadLanguageSetting();
 
   return {
     locale,
